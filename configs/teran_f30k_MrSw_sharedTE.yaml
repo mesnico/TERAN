@@ -1,0 +1,59 @@
+dataset:
+  name: 'f30k'
+  images-path: 'data/f30k/images'  # needed for sizes.pkl
+  data: 'data'
+  restval: True
+  pre-extracted-features: False
+
+text-model:
+  name: 'bert'
+  pretrain: 'bert-base-uncased'
+  word-dim: 768
+  extraction-hidden-layer: 6
+  fine-tune: True
+  pre-extracted: False
+  layers: 0
+  dropout: 0.1
+
+#text-model:
+#  name: 'gru'
+#  word-dim: 300
+#  fine-tune: True
+#  pre-extracted: False
+#  layers: 1
+
+image-model:
+  name: 'bottomup'
+  pre-extracted-features-root: 'data/f30k/features_36'
+  transformer-layers: 4
+  dropout: 0.1
+  pos-encoding: 'concat-and-process'
+  crop-size: 224  # not used
+  fine-tune: False
+  feat-dim: 2048
+  norm: True
+
+model:
+  name: 'teran'
+  embed-size: 1024
+  text-aggregation: 'first'
+  image-aggregation: 'first'
+  layers: 2
+  exclude-stopwords: False
+  shared-transformer: True
+  dropout: 0.1
+
+training:
+  lr: 0.00001  # 0.000006
+  grad-clip: 2.0
+  max-violation: True
+  loss-type: 'alignment'
+  alignment-mode: 'MrSw'
+  measure: 'dot'
+  margin: 0.2
+  bs: 30
+  scheduler: 'steplr'
+  gamma: 0.1
+  step-size: 20
+  warmup: 'linear'
+  warmup-period: 1000
