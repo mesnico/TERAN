@@ -6,8 +6,13 @@ This work is an extension to our previous approach TERN [[PDF](https://arxiv.org
 
 This repo is built on top of [VSE++](https://github.com/fartashf/vsepp) and [TERN](https://github.com/mesnico/TERN)
 <p align="center">
-  <img src="images/alignment.png">
-  <img src="images/retrieval.png">
+  <b>Retrieval</b> <br> <br>
+  <img src="figures/retrieval.png" width="70%">
+</p>
+
+<p align="center">
+  <b>Fine-grained Alignment for Precise Matching</b> <br> <br>
+  <img src="figures/alignment.jpg" width="70%">
 </p>
 
 
