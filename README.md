@@ -5,14 +5,15 @@ Code for the cross-modal visual-linguistic retrieval method from "Fine-grained V
 This work is an extension to our previous approach TERN accepted at ICPR 2020.
 
 This repo is built on top of [VSE++](https://github.com/fartashf/vsepp) and [TERN](https://github.com/mesnico/TERN).
-<p align="center">
-  <b>Retrieval</b> <br> <br>
-  <img src="figures/retrieval.png" width="80%">
-</p>
 
 <p align="center">
   <b>Fine-grained Alignment for Precise Matching</b> <br> <br>
   <img src="figures/alignment.jpg" width="80%">
+</p>
+
+<p align="center">
+  <b>Retrieval</b> <br> <br>
+  <img src="figures/retrieval.png" width="80%">
 </p>
 
 
