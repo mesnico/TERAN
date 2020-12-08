@@ -32,6 +32,12 @@ conda activate teran
 export PYTHONPATH=.
 ```
 
+2.1 Setup minimal python environment for CUDA 10.1 using conda:
+```
+conda env create --file environment_min.yml
+conda activate teran
+export PYTHONPATH=.
+```
 ## Get the data
 1. Download and extract the data folder, containing annotations, the splits by Karpathy et al. and ROUGEL - SPICE precomputed relevances for both COCO and Flickr30K datasets:
 
