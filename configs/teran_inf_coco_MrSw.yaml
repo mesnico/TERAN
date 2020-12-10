@@ -51,7 +51,7 @@ training:
   alignment-mode: 'MrSw'
   measure: 'dot'
   margin: 0.2
-  bs: 100
+  bs: 40
   scheduler: 'steplr'
   gamma: 0.1
   step-size: 20

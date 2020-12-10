@@ -72,7 +72,8 @@ class LogCollector(object):
 
 
 def encode_data(model, data_loader, log_step=10, logging=print):
-    """Encode all images and captions loadable by `data_loader`
+    """
+    Encode all images and captions loadable by `data_loader`
     """
     batch_time = AverageMeter()
     val_logger = LogCollector()
@@ -195,14 +196,14 @@ def evalrank(config, checkpoint, split='dev', fold5=False):
 
     if not fold5:
         # no cross-validation, full evaluation
-        r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
+        # r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
         ri, rti = t2i(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, im_batches=5)
-        ar = (r[0] + r[1] + r[2]) / 3
+        # ar = (r[0] + r[1] + r[2]) / 3
         ari = (ri[0] + ri[1] + ri[2]) / 3
-        rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
-        print("rsum: %.1f" % rsum)
-        print("Average i2t Recall: %.1f" % ar)
-        print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
+        #rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+        #print("rsum: %.1f" % rsum)
+        # print("Average i2t Recall: %.1f" % ar)
+        # print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
         print("Average t2i Recall: %.1f" % ari)
         print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
     else:
@@ -391,10 +392,10 @@ def t2i(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=Fals
                 0]  # in che posizione e' l'immagine (index) che ha questa caption (5*index + i)
             top50[5 * index + i] = inds[i][0:50]
             # calculate ndcg
-            if ndcg_scorer is not None:
-                rougel_ndcgs[5 * index + i], spice_ndcgs[5 * index + i] = \
-                    ndcg_scorer.compute_ndcg(npts, 5 * index + i, inds[i].astype(int),
-                                             fold_index=fold_index, retrieval='image').values()
+            # if ndcg_scorer is not None:
+            #     rougel_ndcgs[5 * index + i], spice_ndcgs[5 * index + i] = \
+            #         ndcg_scorer.compute_ndcg(npts, 5 * index + i, inds[i].astype(int),
+            #                                  fold_index=fold_index, retrieval='image').values()
 
     # Compute metrics
     r1 = 100.0 * len(numpy.where(ranks < 1)[0]) / len(ranks)

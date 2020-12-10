@@ -16,7 +16,7 @@ from nltk.corpus import stopwords, words as nltk_words
 class JointTextImageTransformerEncoder(nn.Module):
     """
     This is a bert caption encoder - transformer image encoder (using bottomup features).
-    If process the encoder outputs through a transformer, like VilBERT and outputs two different graph embeddings
+    It process the encoder outputs through a transformer, like VilBERT and outputs two different graph embeddings
     """
     def __init__(self, config):
         super().__init__()
@@ -233,7 +233,7 @@ class TERAN(torch.nn.Module):
         # bs = img_emb.shape[0]
         losses = {}
 
-        if  'matching' in self.config['training']['loss-type']:
+        if 'matching' in self.config['training']['loss-type']:
             matching_loss = self.matching_criterion(img_emb, cap_emb)
             losses.update({'matching-loss': matching_loss})
             self.logger.update('matching_loss', matching_loss.item(), img_emb.size(0))
