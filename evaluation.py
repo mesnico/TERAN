@@ -150,7 +150,7 @@ def encode_data(model, data_loader, log_step=10, logging=print):
     return img_embs, cap_embs, img_lengths, cap_lengths
 
 
-def evalrank(config, checkpoint, split='dev', fold5=False):
+def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i2t=False):
     """
     Evaluate a trained model on either dev or test. If `fold5=True`, 5 fold
     cross-validation is done (only for MSCOCO). Otherwise, the full data is
@@ -196,48 +196,94 @@ def evalrank(config, checkpoint, split='dev', fold5=False):
 
     if not fold5:
         # no cross-validation, full evaluation
-        # r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
-        ri, rti = t2i(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, im_batches=5)
-        # ar = (r[0] + r[1] + r[2]) / 3
-        ari = (ri[0] + ri[1] + ri[2]) / 3
-        #rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
-        #print("rsum: %.1f" % rsum)
-        # print("Average i2t Recall: %.1f" % ar)
-        # print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
-        print("Average t2i Recall: %.1f" % ari)
-        print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
+        if eval_i2t:
+            r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
+            ar = (r[0] + r[1] + r[2]) / 3
+            print("Average i2t Recall: %.1f" % ar)
+            print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
+
+        if eval_t2i:
+            ri, rti = t2i(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, im_batches=5)
+            ari = (ri[0] + ri[1] + ri[2]) / 3
+            print("Average t2i Recall: %.1f" % ari)
+            print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
+
+        if eval_i2t and eval_t2i:
+            rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+            print("rsum: %.1f" % rsum)
+
+
+
     else:
         # 5fold cross-validation, only for MSCOCO
         results = []
         for i in range(5):
-            r, rt0 = i2t(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
-                         img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
-                         return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, cap_batches=1)
-            print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f ndcg_spice=%.4f" % r)
-            ri, rti0 = t2i(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
-                           img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
-                           return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, im_batches=1)
-            if i == 0:
-                rt, rti = rt0, rti0
-            print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
-            ar = (r[0] + r[1] + r[2]) / 3
-            ari = (ri[0] + ri[1] + ri[2]) / 3
-            rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
-            print("rsum: %.1f ar: %.1f ari: %.1f" % (rsum, ar, ari))
-            results += [list(r) + list(ri) + [ar, ari, rsum]]
+            if eval_i2t:
+                r, rt0 = i2t(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
+                             img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
+                                  return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, cap_batches=1)
+                print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f ndcg_spice=%.4f" % r)
+                if i == 0:
+                    rt = rt0
+                ar = (r[0] + r[1] + r[2]) / 3
+            if eval_t2i:
+                ri, rti0 = t2i(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
+                               img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
+                                    return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, im_batches=1)
+                print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
+                if i == 0:
+                    rti = rti0
+                ari = (ri[0] + ri[1] + ri[2]) / 3
+
+
+            if eval_t2i and eval_i2t:
+                rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+                print("rsum: %.1f ar: %.1f ari: %.1f" % (rsum, ar, ari))
+            elif eval_t2i:
+                print("ari: %.1f" % (ari,))
+            elif eval_i2t:
+                print("ar: %.1f" % (ar,))
+
+
+            if eval_t2i and eval_i2t:
+                results += [list(r) + list(ri) + [ar, ari, rsum]] # 7 + 7 + 3 = 17 elements
+            elif eval_t2i:
+                results += [list(ri) + [ari]] # 7 + 1 = 8 elements
+            elif eval_i2t:
+                results += [list(r) + [ar]] # 7 + 1 = 8 elements
+
+
 
         print("-----------------------------------")
         print("Mean metrics: ")
         mean_metrics = tuple(np.array(results).mean(axis=0).flatten())
-        print("rsum: %.1f" % (mean_metrics[16] * 6))
-        print("Average i2t Recall: %.1f" % mean_metrics[14])
-        print("Image to text: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
-              mean_metrics[:7])
-        print("Average t2i Recall: %.1f" % mean_metrics[15])
-        print("Text to image: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
-              mean_metrics[7:14])
+        if eval_t2i and eval_i2t:
+            print("rsum: %.1f" % (mean_metrics[16] * 6))
+            print("Average i2t Recall: %.1f" % mean_metrics[14])
+            print("Image to text: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
+                  mean_metrics[:7])
+            print("Average t2i Recall: %.1f" % mean_metrics[15])
+            print("Text to image: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
+                  mean_metrics[7:14])
+        elif eval_t2i:
+            print("Average t2i Recall: %.1f" % mean_metrics[7])
+            print("Text to image: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
+                  mean_metrics[:7])
+        elif eval_i2t:
+            print("Average i2t Recall: %.1f" % mean_metrics[7])
+            print("Image to text: %.1f %.1f %.1f %.1f %.1f ndcg_rouge=%.4f ndcg_spice=%.4f" %
+                  mean_metrics[:7])
 
-    torch.save({'rt': rt, 'rti': rti}, 'ranks.pth.tar')
+
+
+
+    if eval_t2i and eval_i2t:
+        torch.save({'rt': rt, 'rti': rti}, 'ranks.pth.tar')
+    elif eval_t2i:
+        torch.save({'rti': rti}, 'ranks.pth.tar')
+    elif eval_i2t:
+        torch.save({'rt': rt}, 'ranks.pth.tar')
+
 
 
 def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=False, ndcg_scorer=None, fold_index=0, measure='dot', sim_function=None, cap_batches=1):
