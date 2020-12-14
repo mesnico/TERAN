@@ -156,7 +156,7 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     cross-validation is done (only for MSCOCO). Otherwise, the full data is
     used for evaluation.
     """
-    evalrank_start_time = time.time();
+    evalrank_start_time = time.time()
 
     # load model and options
     # checkpoint = torch.load(model_path)

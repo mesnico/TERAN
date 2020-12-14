@@ -29,7 +29,8 @@ def main(opt, current_config):
     if current_config is not None:
         loaded_config['dataset']['images-path'] = current_config['dataset']['images-path']
         loaded_config['dataset']['data'] = current_config['dataset']['data']
-        loaded_config['image-model']['pre-extracted-features-root'] = current_config['image-model']['pre-extracted-features-root']
+        loaded_config['image-model']['pre-extracted-features-root'] = current_config['image-model'][
+            'pre-extracted-features-root']
         loaded_config['training']['bs'] = current_config['training']['bs']
 
     evaluation.evalrank(loaded_config, checkpoint, split="test", fold5=False, eval_t2i=opt.t2i, eval_i2t=opt.i2t)
@@ -40,10 +41,10 @@ if __name__ == '__main__':
     parser.add_argument('checkpoint', type=str, help="Checkpoint to load")
     parser.add_argument('--size', type=str, choices=['1k', '5k'], default='1k')
     parser.add_argument('--gpu', type=bool, default=True, help="If false, CPU is used for computations; GPU otherwise.")
-    parser.add_argument('--t2i', type=bool, default=True, help="If true text-to-image (image retrieval) evaluation "
-                                                               "will be executed.")
-    parser.add_argument('--i2t', type=bool, default=False, help="If true image-to-text (image captioning) evaluation "
-                                                                "will be executed.")
+    parser.add_argument('--t2i', action='store_true', default=True,
+                        help="If set text-to-image (image retrieval) evaluation will be executed.")
+    parser.add_argument('--i2t', action='store_true', default=False,
+                        help="If set image-to-text (image captioning) evaluation will be executed.")
     parser.add_argument('--config', type=str, default=None, help="Which configuration to use for overriding the "
                                                                  "checkpoint configuration. See into 'config' folder")
 
