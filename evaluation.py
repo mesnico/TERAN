@@ -156,6 +156,8 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     cross-validation is done (only for MSCOCO). Otherwise, the full data is
     used for evaluation.
     """
+    evalrank_start_time = time.time();
+
     # load model and options
     # checkpoint = torch.load(model_path)
     data_path = config['dataset']['data']
@@ -177,7 +179,10 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     sim_matrix_fn = AlignmentContrastiveLoss(aggregation=config['training']['alignment-mode'], return_similarity_mat=True) if config['training']['loss-type'] == 'alignment' else None
 
     print('Computing results...')
+    encode_data_start_time = time.time()
     img_embs, cap_embs, img_lenghts, cap_lenghts = encode_data(model, data_loader)
+    print(f"Time elapsed for encode_data: {time.time() - encode_data_start_time} seconds." )
+
     torch.cuda.empty_cache()
 
     # if checkpoint2 is not None:
@@ -197,16 +202,24 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     if not fold5:
         # no cross-validation, full evaluation
         if eval_i2t:
+            eval_i2t_start_time = time.time()
+
             r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
             ar = (r[0] + r[1] + r[2]) / 3
             print("Average i2t Recall: %.1f" % ar)
             print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
 
+            print(f"Time elapsed for i2t evaluation without 5-fold CV: {time.time() - eval_i2t_start_time} seconds." )
+
         if eval_t2i:
+            eval_t2i_start_time = time.time()
+
             ri, rti = t2i(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, im_batches=5)
             ari = (ri[0] + ri[1] + ri[2]) / 3
             print("Average t2i Recall: %.1f" % ari)
             print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
+
+            print(f"Time elapsed for i2t evaluation without 5-fold CV: {time.time() - eval_t2i_start_time} seconds.")
 
         if eval_i2t and eval_t2i:
             rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
@@ -283,6 +296,8 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
         torch.save({'rti': rti}, 'ranks.pth.tar')
     elif eval_i2t:
         torch.save({'rt': rt}, 'ranks.pth.tar')
+
+    print(f"Time elapsed for evalrank(): {time.time() - evalrank_start_time} seconds.")
 
 
 
