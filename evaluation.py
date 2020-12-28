@@ -1,16 +1,17 @@
 from __future__ import print_function
 
-import numpy
-
-from data import get_test_loader
 import time
+from collections import OrderedDict
+
+import numpy
 import numpy as np
 import torch
 import tqdm
-from collections import OrderedDict
-from utils import dot_sim, get_model
+
 from evaluate_utils.dcg import DCG
 from models.loss import order_sim, AlignmentContrastiveLoss
+from utils import get_model
+from data import get_test_loader
 
 
 class AverageMeter(object):
@@ -176,12 +177,14 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     ndcg_val_scorer = DCG(config, len(data_loader.dataset), split, rank=25, relevance_methods=['rougeL', 'spice'])
 
     # initialize similarity matrix evaluator
-    sim_matrix_fn = AlignmentContrastiveLoss(aggregation=config['training']['alignment-mode'], return_similarity_mat=True) if config['training']['loss-type'] == 'alignment' else None
+    sim_matrix_fn = AlignmentContrastiveLoss(aggregation=config['training']['alignment-mode'],
+                                             return_similarity_mat=True) if config['training'][
+                                                                                'loss-type'] == 'alignment' else None
 
     print('Computing results...')
     encode_data_start_time = time.time()
     img_embs, cap_embs, img_lenghts, cap_lenghts = encode_data(model, data_loader)
-    print(f"Time elapsed for encode_data: {time.time() - encode_data_start_time} seconds." )
+    print(f"Time elapsed for encode_data: {time.time() - encode_data_start_time} seconds.")
 
     torch.cuda.empty_cache()
 
@@ -204,17 +207,32 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
         if eval_i2t:
             eval_i2t_start_time = time.time()
 
-            r, rt = i2t(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, cap_batches=5)
+            r, rt = i2t(img_embs,
+                        cap_embs,
+                        img_lenghts,
+                        cap_lenghts,
+                        return_ranks=True,
+                        ndcg_scorer=ndcg_val_scorer,
+                        sim_function=sim_matrix_fn,
+                        cap_batches=5)
             ar = (r[0] + r[1] + r[2]) / 3
             print("Average i2t Recall: %.1f" % ar)
             print("Image to text: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % r)
 
-            print(f"Time elapsed for i2t evaluation without 5-fold CV: {time.time() - eval_i2t_start_time} seconds." )
+            print(f"Time elapsed for i2t evaluation without 5-fold CV: {time.time() - eval_i2t_start_time} seconds.")
 
         if eval_t2i:
             eval_t2i_start_time = time.time()
 
-            ri, rti = t2i(img_embs, cap_embs, img_lenghts, cap_lenghts, return_ranks=True, ndcg_scorer=ndcg_val_scorer, sim_function=sim_matrix_fn, im_batches=5)
+            ri, rti = t2i(img_embs,
+                          cap_embs,
+                          img_lenghts,
+                          cap_lenghts,
+                          return_ranks=True,
+                          ndcg_scorer=ndcg_val_scorer,
+                          sim_function=sim_matrix_fn,
+                          im_batches=5)
+
             ari = (ri[0] + ri[1] + ri[2]) / 3
             print("Average t2i Recall: %.1f" % ari)
             print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
@@ -234,7 +252,8 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
             if eval_i2t:
                 r, rt0 = i2t(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
                              img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
-                                  return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, cap_batches=1)
+                             return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn,
+                             cap_batches=1)
                 print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f ndcg_spice=%.4f" % r)
                 if i == 0:
                     rt = rt0
@@ -242,7 +261,8 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
             if eval_t2i:
                 ri, rti0 = t2i(img_embs[i * 5000:(i + 1) * 5000], cap_embs[i * 5000:(i + 1) * 5000],
                                img_lenghts[i * 5000:(i + 1) * 5000], cap_lenghts[i * 5000:(i + 1) * 5000],
-                                    return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn, im_batches=1)
+                               return_ranks=True, ndcg_scorer=ndcg_val_scorer, fold_index=i, sim_function=sim_matrix_fn,
+                               im_batches=1)
                 print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
                 if i == 0:
                     rti = rti0
@@ -257,15 +277,12 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
             elif eval_i2t:
                 print("ar: %.1f" % (ar,))
 
-
             if eval_t2i and eval_i2t:
-                results += [list(r) + list(ri) + [ar, ari, rsum]] # 7 + 7 + 3 = 17 elements
+                results += [list(r) + list(ri) + [ar, ari, rsum]]  # 7 + 7 + 3 = 17 elements
             elif eval_t2i:
-                results += [list(ri) + [ari]] # 7 + 1 = 8 elements
+                results += [list(ri) + [ari]]  # 7 + 1 = 8 elements
             elif eval_i2t:
-                results += [list(r) + [ar]] # 7 + 1 = 8 elements
-
-
+                results += [list(r) + [ar]]  # 7 + 1 = 8 elements
 
         print("-----------------------------------")
         print("Mean metrics: ")
@@ -343,8 +360,8 @@ def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=Fals
                 d = d.cpu().numpy().flatten()
             else:
                 for i in range(cap_batches):
-                    captions_now = captions[i*captions_per_batch:(i+1)*captions_per_batch]
-                    cap_lenghts_now = cap_lenghts[i*captions_per_batch:(i+1)*captions_per_batch]
+                    captions_now = captions[i * captions_per_batch:(i + 1) * captions_per_batch]
+                    cap_lenghts_now = cap_lenghts[i * captions_per_batch:(i + 1) * captions_per_batch]
                     captions_now = captions_now.cuda()
 
                     d_align = sim_function(im, captions_now, im_len, cap_lenghts_now)
@@ -352,7 +369,7 @@ def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=Fals
                     # d_matching = torch.mm(im[:, 0, :], captions[:, 0, :].t())
                     # d_matching = d_matching.cpu().numpy().flatten()
                     if d is None:
-                        d = d_align # + d_matching
+                        d = d_align  # + d_matching
                     else:
                         d = numpy.concatenate([d, d_align], axis=0)
 
@@ -432,31 +449,33 @@ def t2i(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=Fals
                 d = d.cpu().numpy()
             else:
                 for i in range(im_batches):
-                    ims_now = ims[i * images_per_batch:(i+1) * images_per_batch]
-                    ims_len_now = ims_len[i * images_per_batch:(i+1) * images_per_batch]
+                    ims_now = ims[i * images_per_batch:(i + 1) * images_per_batch]
+                    ims_len_now = ims_len[i * images_per_batch:(i + 1) * images_per_batch]
                     ims_now = ims_now.cuda()
 
                     # d = numpy.dot(queries, ims.T)
+                    # d_align is the (MrSw) aggregated/pooled similarity matrix A in the paper
                     d_align = sim_function(ims_now, queries, ims_len_now, queries_len).t()
                     d_align = d_align.cpu().numpy()
                     # d_matching = torch.mm(queries[:, 0, :], ims[:, 0, :].t())
                     # d_matching = d_matching.cpu().numpy()
                     if d is None:
-                        d = d_align # + d_matching
+                        d = d_align  # + d_matching
                     else:
                         d = numpy.concatenate([d, d_align], axis=1)
 
+        # d contains all aggregated/pooled similarity matrices for all query-image pairs in the test set
         inds = numpy.zeros(d.shape)
         for i in range(len(inds)):
             inds[i] = numpy.argsort(d[i])[::-1]
-            ranks[5 * index + i] = numpy.where(inds[i] == index)[0][
-                0]  # in che posizione e' l'immagine (index) che ha questa caption (5*index + i)
+            # in che posizione e' l'immagine (index) che ha questa caption (5*index + i)
+            ranks[5 * index + i] = numpy.where(inds[i] == index)[0][0]
             top50[5 * index + i] = inds[i][0:50]
             # calculate ndcg
-            # if ndcg_scorer is not None:
-            #     rougel_ndcgs[5 * index + i], spice_ndcgs[5 * index + i] = \
-            #         ndcg_scorer.compute_ndcg(npts, 5 * index + i, inds[i].astype(int),
-            #                                  fold_index=fold_index, retrieval='image').values()
+            if ndcg_scorer is not None:
+                rougel_ndcgs[5 * index + i], spice_ndcgs[5 * index + i] = \
+                    ndcg_scorer.compute_ndcg(npts, 5 * index + i, inds[i].astype(int),
+                                             fold_index=fold_index, retrieval='image').values()
 
     # Compute metrics
     r1 = 100.0 * len(numpy.where(ranks < 1)[0]) / len(ranks)

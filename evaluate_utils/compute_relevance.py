@@ -58,7 +58,7 @@ def get_dataset(config, split):
     data_name = config['dataset']['name']
     if 'coco' in data_name:
         # COCO custom dataset
-        dataset = data.CocoDataset(root=roots[split]['img'], json=roots[split]['cap'], ids=ids[split], get_images=False)
+        dataset = data.CocoDataset(imgs_root=roots[split]['img'], captions_json=roots[split]['cap'], ids=ids[split], get_images=False)
     elif 'f8k' in data_name or 'f30k' in data_name:
         dataset = data.FlickrDataset(root=roots[split]['img'], split=split, json=roots[split]['cap'], get_images=False)
     return dataset

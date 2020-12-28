@@ -1,17 +1,15 @@
+import json as jsonmod
+import os
+import pickle
+
+import numpy as np
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
-import os
-import nltk
+import tqdm
 from PIL import Image
 from pycocotools.coco import COCO
-import numpy as np
-import json as jsonmod
-from collections.abc import Sequence
-import shelve
 from transformers import BertTokenizer
-import pickle
-import tqdm
 
 from features import HuggingFaceTransformerExtractor
 
@@ -82,21 +80,21 @@ def get_paths(config):
 class CocoDataset(data.Dataset):
     """COCO Custom Dataset compatible with torch.utils.data.DataLoader."""
 
-    def __init__(self, root, json, transform=None, ids=None, get_images=True):
+    def __init__(self, imgs_root, captions_json, transform=None, ids=None, get_images=True):
         """
         Args:
-            root: image directory.
-            json: coco annotation file path.
+            imgs_root: image directory.
+            captions_json: coco annotation file path.
             transform: transformer for image.
         """
-        self.root = root
+        self.root = imgs_root
         self.get_images = get_images
         # when using `restval`, two json files are needed
-        if isinstance(json, tuple):
-            self.coco = (COCO(json[0]), COCO(json[1]))
+        if isinstance(captions_json, tuple):
+            self.coco = (COCO(captions_json[0]), COCO(captions_json[1]))
         else:
-            self.coco = (COCO(json),)
-            self.root = (root,)
+            self.coco = (COCO(captions_json),)
+            self.root = (imgs_root,)
         # if ids provided by get_paths, use split-specific ids
         if ids is None:
             self.ids = list(self.coco.anns.keys())
@@ -123,7 +121,7 @@ class CocoDataset(data.Dataset):
         return image, target, index, img_id
 
     def get_raw_item(self, index, load_image=True):
-        if index < self.bp:
+        if index < self.bp:  # bp -> breakpoint to stop after N samples
             coco = self.coco[0]
             root = self.root[0]
         else:
@@ -132,8 +130,8 @@ class CocoDataset(data.Dataset):
         ann_id = self.ids[index]
         caption = coco.anns[ann_id]['caption']
         img_id = coco.anns[ann_id]['image_id']
-        img = coco.imgs[img_id]
-        img_size = np.array([img['width'], img['height']])
+        img_metadata = coco.imgs[img_id]
+        img_size = np.array([img_metadata['width'], img_metadata['height']])
         if load_image:
             path = coco.loadImgs(img_id)[0]['file_name']
             image = Image.open(os.path.join(root, path)).convert('RGB')
@@ -147,14 +145,14 @@ class CocoDataset(data.Dataset):
 
 
 class BottomUpFeaturesDataset:
-    def __init__(self, root, json, features_path, split, ids=None, **kwargs):
+    def __init__(self, imgs_root, captions_json, features_path, split, ids=None, **kwargs):
         # which dataset?
-        r = root[0] if type(root) == tuple else root
+        r = imgs_root[0] if type(imgs_root) == tuple else imgs_root
         r = r.lower()
         if 'coco' in r:
-            self.underlying_dataset = CocoDataset(root, json, ids=ids)
+            self.underlying_dataset = CocoDataset(imgs_root, captions_json, ids=ids)
         elif 'f30k' in r or 'flickr30k' in r:
-            self.underlying_dataset = FlickrDataset(root, json, split)
+            self.underlying_dataset = FlickrDataset(imgs_root, captions_json, split)
 
         # data_path = config['image-model']['data-path']
         self.feats_data_path = os.path.join(features_path, 'bu_att')
@@ -191,7 +189,7 @@ class BottomUpFeaturesDataset:
         else:
             target = caption
         # image = (img_feat, img_boxes)
-        return img_feat, img_boxes, target, index, img_id
+        return img_feat, img_boxes, target, index, img_id  # target is the actual caption sentence
 
     def __len__(self):
         return len(self.underlying_dataset)
@@ -348,31 +346,31 @@ class Collate:
             return img_features, targets, feat_lengths, cap_lengths, out_boxes, ids
 
 
-def get_loader_single(data_name, split, root, json, transform, preextracted_root=None,
+def get_loader_single(data_name, split, imgs_root, captions_json, transform, pre_extracted_root=None,
                       batch_size=100, shuffle=True,
                       num_workers=2, ids=None, collate_fn=None, **kwargs):
     """Returns torch.utils.data.DataLoader for custom coco dataset."""
     if 'coco' in data_name:
-        if preextracted_root is not None:
-            dataset = BottomUpFeaturesDataset(root=root,
-                                              json=json,
-                                              features_path=preextracted_root, split=split,
+        if pre_extracted_root is not None:
+            dataset = BottomUpFeaturesDataset(imgs_root=imgs_root,
+                                              captions_json=captions_json,
+                                              features_path=pre_extracted_root, split=split,
                                               ids=ids, **kwargs)
         else:
             # COCO custom dataset
-            dataset = CocoDataset(root=root,
-                                  json=json,
+            dataset = CocoDataset(imgs_root=imgs_root,
+                                  captions_json=captions_json,
                                   transform=transform, ids=ids)
     elif 'f8k' in data_name or 'f30k' in data_name:
-        if preextracted_root is not None:
-            dataset = BottomUpFeaturesDataset(root=root,
-                                              json=json,
-                                              features_path=preextracted_root, split=split,
+        if pre_extracted_root is not None:
+            dataset = BottomUpFeaturesDataset(imgs_root=imgs_root,
+                                              captions_json=captions_json,
+                                              features_path=pre_extracted_root, split=split,
                                               ids=ids, **kwargs)
         else:
-            dataset = FlickrDataset(root=root,
+            dataset = FlickrDataset(root=imgs_root,
                                     split=split,
-                                    json=json,
+                                    json=captions_json,
                                     transform=transform)
 
     # Data loader
@@ -385,7 +383,7 @@ def get_loader_single(data_name, split, root, json, transform, preextracted_root
     return data_loader
 
 
-def get_transform(data_name, split_name, config):
+def get_transform(data_name=None, split_name=None, config=None):
     normalizer = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                       std=[0.229, 0.224, 0.225])
     t_list = []
@@ -417,7 +415,7 @@ def get_loaders(config, workers, batch_size=None):
                                      roots['train']['img'],
                                      roots['train']['cap'],
                                      transform, ids=ids['train'],
-                                     preextracted_root=preextracted_root,
+                                     pre_extracted_root=preextracted_root,
                                      batch_size=batch_size, shuffle=True,
                                      num_workers=workers,
                                      collate_fn=collate_fn, config=config)
@@ -427,7 +425,7 @@ def get_loaders(config, workers, batch_size=None):
                                    roots['val']['img'],
                                    roots['val']['cap'],
                                    transform, ids=ids['val'],
-                                   preextracted_root=preextracted_root,
+                                   pre_extracted_root=preextracted_root,
                                    batch_size=batch_size, shuffle=False,
                                    num_workers=workers,
                                    collate_fn=collate_fn, config=config)
@@ -443,15 +441,15 @@ def get_test_loader(config, workers, split_name='test', batch_size=None):
     # Build Dataset Loader
     roots, ids = get_paths(config)
 
-    preextracted_root = config['image-model']['pre-extracted-features-root'] \
+    pre_extracted_root = config['image-model']['pre-extracted-features-root'] \
         if 'pre-extracted-features-root' in config['image-model'] else None
 
     transform = get_transform(data_name, split_name, config)
     test_loader = get_loader_single(data_name, split_name,
-                                    roots[split_name]['img'],
-                                    roots[split_name]['cap'],
-                                    transform, ids=ids[split_name],
-                                    preextracted_root=preextracted_root,
+                                    imgs_root=roots[split_name]['img'],
+                                    captions_json=roots[split_name]['cap'],
+                                    transform=transform, ids=ids[split_name],
+                                    pre_extracted_root=pre_extracted_root,
                                     batch_size=batch_size, shuffle=False,
                                     num_workers=workers,
                                     collate_fn=collate_fn, config=config)
