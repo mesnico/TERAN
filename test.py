@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import torch
 import yaml
@@ -48,7 +49,9 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default=None, help="Which configuration to use for overriding the "
                                                                  "checkpoint configuration. See into 'config' folder")
 
-    print("CUDA_VISIBLE_DEVICES: " + os.getenv("CUDA_VISIBLE_DEVICES", ""))
+    print("CUDA_VISIBLE_DEVICES: " + os.getenv("CUDA_VISIBLE_DEVICES", "NOT SET - ABORTING"))
+    if os.getenv("CUDA_VISIBLE_DEVICES", None) is None:
+        sys.exit(1)
 
     opt = parser.parse_args()
     if opt.config is not None:
