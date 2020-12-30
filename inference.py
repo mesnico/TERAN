@@ -129,11 +129,6 @@ def get_image_names(top_k_indices, data_loader) -> List[str]:
 
 
 def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
-    # load model and options
-    # checkpoint = torch.load(model_path)
-    data_path = config['dataset']['data']
-    measure = config['training']['measure']
-
     # construct model
     model = TERAN(config)
 

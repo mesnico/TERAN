@@ -147,7 +147,7 @@ class CocoDataset(data.Dataset):
         return len(self.annotation_ids)
 
 
-class CocoImageRetrievalDataset:
+class CocoImageRetrievalDataset(data.Dataset):
     """
     Custom COCO Dataset that uses only the images together with a user query.
     Compatible with torch.utils.data.DataLoader.
@@ -634,7 +634,7 @@ def get_coco_image_retrieval_data_loader(config, workers, query):
                                         query=query,
                                         num_imgs=num_imgs)
 
-    # basically this creates the mini-batches which get passed to the model
+    # this creates the batches which get passed to the model (inside the query gets repeated or not based on the config)
     collate_fn = InferenceCollate(config)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
