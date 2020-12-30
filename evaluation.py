@@ -1,7 +1,6 @@
 from __future__ import print_function
 
 import time
-from collections import OrderedDict
 
 import numpy
 import numpy as np
