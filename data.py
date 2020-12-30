@@ -402,24 +402,25 @@ class InferenceCollate(object):
             img_feature_batch[i, 1:] = f
 
         # create the image features bounding boxes batch
+        img_feat_lengths = [self.img_feat_length for _ in range(batch_size)]
         img_feat_bboxes_batch = torch.zeros(batch_size, self.bboxes_length, self.bboxes_dim)
         for i, box in enumerate(img_feat_bboxes):
             img_feat_bboxes_batch[i, 1:] = box
 
         if self.create_query_batch:
-            # create the query batch
+            # create the full query batch of size B x |Q|
             # since the token id is a scalar, the dim is 1 and whe don't need to add it to the batch
             # for the BERT embeddings the ids have to be Long
-            query_batch = torch.zeros(batch_size, self.query_length).long()
+            query_token_ids_batch = torch.zeros(batch_size, self.query_length).long()
             for i in range(len(queries)):
-                query_batch[i] = self.query_token_ids
-
+                query_token_ids_batch[i] = self.query_token_ids
             query_lengths = [self.query_length for _ in range(batch_size)]
-            img_feat_lengths = [self.img_feat_length for _ in range(batch_size)]
-
-            return img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_batch, query_lengths, dataset_indices
         else:
-            return img_feature_batch, img_feat_bboxes_batch, self.img_feat_length, self.query_token_ids, self.query_length, dataset_indices
+            # create a pseudo query batch with only one element of size 1 x |Q|
+            query_token_ids_batch = self.query_token_ids.unsqueeze(dim=0)
+            query_lengths = [self.query_length]
+
+        return img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_ids_batch, query_lengths, dataset_indices
 
 
 class Collate:
@@ -620,7 +621,7 @@ def get_coco_image_retrieval_data_loader(config, workers, query):
     imgs_root = roots[split_name]['img']
 
     # for images we use pre-extracted features (not for text)
-    pre_extracted_img_features_root = config['image-retrieval']['pre-extracted-img-features-root']
+    pre_extracted_img_features_root = config['image-retrieval']['pre_extracted_img_features_root']
 
     captions_json = roots[split_name]['cap']
     coco_annotation_ids = coco_annotation_ids[split_name]

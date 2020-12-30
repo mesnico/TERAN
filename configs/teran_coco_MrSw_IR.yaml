@@ -9,9 +9,9 @@ image-retrieval:
   dataset: 'coco' # for now only coco support
   split: 'test' # we can remove this in later versions
   num_imgs: 5000
-  batch_size: 100
-  pre-extracted-img-features-root: 'data/coco/features_36'
-  create_query_batch: True
+  batch_size: 100 # 100 takes ~10s; 1000 takes ~14s to encode the data (compute the TE outputs)
+  pre_extracted_img_features_root: 'data/coco/features_36'
+  create_query_batch: False
   alignment_mode: 'MrSw'
 
 

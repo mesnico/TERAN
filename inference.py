@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 import time
-from typing import List, Any, Dict
+from typing import List
 
 import numpy as np
 import torch
@@ -34,45 +34,42 @@ def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=pr
     num_img_feats = None  # all images have a fixed size of pre-extracted features of 36 + 1 regions
     img_embs = None
 
+    # make sure val logger is used
+    model.logger = val_logger
+
     start_time = time.time()
-    for i, (img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_ids, query_lengths,
+    for i, (img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_id_batch, query_lengths_batch,
             dataset_indices) in enumerate(data_loader):
 
-        # make sure val logger is used
-        model.logger = val_logger
-
-        # TODO
-        # in the first version just stack the query_token_ids, img_feat_length and query_length
-        # so that it has shape B x ? x ?, where B is len(img_feature_batch) (should be equal to bs set in the config)
-        #
-        # in the second version adapt model.forward_emb so that the embeddings get only computed once and then stacked
-        # to the same size as the img_embs
-
-        # make sure val logger is used
-        model.logger = val_logger
+        if query_embs is not None:
+            # set the query batch to None so it doesn't get forwarded by TERAN again (to safe computation)
+            query_token_id_batch = None
+            query_lengths_batch = None
 
         # compute the embeddings
         with torch.no_grad():
             # TODO inside model.forward_emb we have to adapt the code for only a single query so that it doesn't get
             # computed each time
             _, _, img_emb, query_emb, _ = model.forward_emb(img_feature_batch,
-                                                            query_token_ids,
+                                                            query_token_id_batch,
                                                             img_feat_lengths,
-                                                            query_lengths,
+                                                            query_lengths_batch,
                                                             img_feat_bboxes_batch)
 
             # initialize the arrays given the size of the embeddings
             if img_embs is None:
                 num_img_feats = img_feat_lengths[0] if isinstance(img_feat_lengths, list) else img_feat_lengths
-                num_query_feats = query_lengths[0] if isinstance(query_lengths, list) else query_lengths
+                num_query_feats = query_lengths_batch[0] if isinstance(query_lengths_batch,
+                                                                       list) else query_lengths_batch
                 img_feat_dim = img_emb.size(2)
                 query_feat_dim = query_emb.size(2)
                 img_embs = torch.zeros((len(data_loader.dataset), num_img_feats, img_feat_dim))
-                query_embs = torch.zeros((len(data_loader.dataset), num_query_feats, query_feat_dim))
+                query_embs = torch.zeros((1, num_query_feats, query_feat_dim))
+                query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
 
             # preserve the embeddings by copying from gpu and converting to numpy
+            # TODO we could persist them on the disk to further save time
             img_embs[dataset_indices, :, :] = img_emb.cpu().permute(1, 0, 2)
-            query_embs[dataset_indices, :, :] = query_emb.cpu().permute(1, 0, 2)
 
         # measure elapsed time per batch
         batch_time.update(time.time() - start_time)
@@ -81,7 +78,7 @@ def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=pr
         if i % log_step == 0:
             logging(
                 f"Batch: [{i}/{len(data_loader)}]\t{str(model.logger)}\tTime {batch_time.val:.3f} ({batch_time.avg:.3f})")
-        del img_feature_batch, query_token_ids
+        del img_feature_batch, query_token_id_batch
 
     print(f"Time elapsed to encode data: {time.time() - encode_data_start_time} seconds.")
     return img_embs, query_embs, num_img_feats, num_query_feats
@@ -92,10 +89,8 @@ def compute_distance_sorted_indices(img_embs, query_embs, img_lengths, query_len
     sim_matrix_fn = AlignmentContrastiveLoss(aggregation=config['image-retrieval']['alignment_mode'],
                                              return_similarity_mat=True)
     start_time = time.time()
-    img_embs_per_batch = 1000  # TODO config variable
-    img_emb_batches = 5  # TODO config / calc
-
-    num_img_embs = img_embs.shape[0]
+    img_emb_batches = 1  # TODO config / calc
+    img_embs_per_batch = img_embs.size(0) // img_emb_batches  # TODO config variable
 
     # distances storage
     distances = None
@@ -109,7 +104,7 @@ def compute_distance_sorted_indices(img_embs, query_embs, img_lengths, query_len
     # batch-wise compute the alignment distance between the images and the query
     for i in tqdm.trange(img_emb_batches):
         # create the current batch
-        img_embs_batch = img_embs[i * img_embs_per_batch:(i+1) * img_embs_per_batch]
+        img_embs_batch = img_embs[i * img_embs_per_batch:(i + 1) * img_embs_per_batch]
         img_embs_length_batch = [img_lengths for _ in range(img_embs_per_batch)]
         img_embs_batch.cuda()
 
@@ -189,7 +184,8 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str,
                         help="Model (checkpoint) to load. E.g. pretrained_models/coco_MrSw.pth.tar", required=True)
     parser.add_argument('--query', type=str, required=True)
-    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')  # cpu is only for local test runs
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'],
+                        default='cuda')  # cpu is only for local test runs
     parser.add_argument('--num_data_workers', type=int, default=8)
     parser.add_argument('--num_images', type=int, default=5000)
     parser.add_argument('--top_k', type=int, default=100)
