@@ -15,23 +15,25 @@ from features import HuggingFaceTransformerExtractor
 
 
 def get_paths(config):
+    # noinspection PyIncorrectDocstring
+    # noinspection PyUnresolvedReferences
     """
-    Returns paths to images and annotations for the given datasets. For MSCOCO
-    indices are also returned to control the data split being used.
-    The indices are extracted from the Karpathy et al. splits using this
-    snippet:
+        Returns paths to images and annotations for the given datasets. For MSCOCO
+        indices are also returned to control the data split being used.
+        The indices are extracted from the Karpathy et al. splits using this
+        snippet:
 
-    >>> import json
-    >>> dataset=json.load(open('dataset_coco.json','r'))
-    >>> A=[]
-    >>> for i in range(len(D['images'])):
-    ...   if D['images'][i]['split'] == 'val':
-    ...     A+=D['images'][i]['sentids'][:5]
-    ...
+        >>> import json
+        >>> dataset=json.load(open('dataset_coco.json','r'))
+        >>> A=[]
+        >>> for i in range(len(D['images'])):
+        ...   if D['images'][i]['split'] == 'val':
+        ...     A+=D['images'][i]['sentids'][:5]
+        ...
 
-    :param name: Dataset names
-    :param use_restval: If True, the the `restval` data is included in train.
-    """
+        :param name: Dataset names
+        :param use_restval: If True, the the `restval` data is included in train.
+        """
     name = config['dataset']['name']
     annotations_path = os.path.join(config['dataset']['data'], name, 'annotations')
     use_restval = config['dataset']['restval']
@@ -62,7 +64,8 @@ def get_paths(config):
         ids['test'] = np.load(os.path.join(annotations_path, 'coco_test_ids.npy'))
         ids['trainrestval'] = (
             ids['train'],
-            np.load(os.path.join(annotations_path, 'coco_restval_ids.npy')))
+            np.load(os.path.join(annotations_path, 'coco_restval_ids.npy'))
+        )
         if use_restval:
             roots['train'] = roots['trainrestval']
             ids['train'] = ids['trainrestval']
@@ -80,7 +83,7 @@ def get_paths(config):
 class CocoDataset(data.Dataset):
     """COCO Custom Dataset compatible with torch.utils.data.DataLoader."""
 
-    def __init__(self, imgs_root, captions_json, transform=None, ids=None, get_images=True):
+    def __init__(self, imgs_root, captions_json, transform=None, coco_annotation_ids=None, get_images=True):
         """
         Args:
             imgs_root: image directory.
@@ -96,17 +99,17 @@ class CocoDataset(data.Dataset):
             self.coco = (COCO(captions_json),)
             self.root = (imgs_root,)
         # if ids provided by get_paths, use split-specific ids
-        if ids is None:
-            self.ids = list(self.coco.anns.keys())
+        if coco_annotation_ids is None:
+            self.annotation_ids = list(self.coco[0].anns.keys())
         else:
-            self.ids = ids
+            self.annotation_ids = coco_annotation_ids
 
         # if `restval` data is to be used, record the break point for ids
-        if isinstance(self.ids, tuple):
-            self.bp = len(self.ids[0])
-            self.ids = list(self.ids[0]) + list(self.ids[1])
+        if isinstance(self.annotation_ids, tuple):
+            self.bp = len(self.annotation_ids[0])
+            self.annotation_ids = list(self.annotation_ids[0]) + list(self.annotation_ids[1])
         else:
-            self.bp = len(self.ids)
+            self.bp = len(self.annotation_ids)
         self.transform = transform
 
     def __getitem__(self, index):
@@ -127,7 +130,7 @@ class CocoDataset(data.Dataset):
         else:
             coco = self.coco[1]
             root = self.root[1]
-        ann_id = self.ids[index]
+        ann_id = self.annotation_ids[index]
         caption = coco.anns[ann_id]['caption']
         img_id = coco.anns[ann_id]['image_id']
         img_metadata = coco.imgs[img_id]
@@ -141,7 +144,7 @@ class CocoDataset(data.Dataset):
             return root, caption, img_id, None, None, img_size
 
     def __len__(self):
-        return len(self.ids)
+        return len(self.annotation_ids)
 
 
 class BottomUpFeaturesDataset:
@@ -150,7 +153,7 @@ class BottomUpFeaturesDataset:
         r = imgs_root[0] if type(imgs_root) == tuple else imgs_root
         r = r.lower()
         if 'coco' in r:
-            self.underlying_dataset = CocoDataset(imgs_root, captions_json, ids=ids)
+            self.underlying_dataset = CocoDataset(imgs_root, captions_json, coco_annotation_ids=ids)
         elif 'f30k' in r or 'flickr30k' in r:
             self.underlying_dataset = FlickrDataset(imgs_root, captions_json, split)
 
@@ -275,12 +278,12 @@ class Collate:
 
             Returns:
                 images: torch tensor of shape (batch_size, 3, 256, 256).
-                targets: torch tensor of shape (batch_size, padded_length).
+                targets: torch tensor of shape (batch_size, padded_length). -> the textual tokens
                 lengths: list; valid length for each padded caption.
             """
         # Sort a data list by caption length
         # data.sort(key=lambda x: len(x[1]), reverse=True)
-        if len(data[0]) == 5:      # TODO: find a better way to distinguish the two
+        if len(data[0]) == 5:  # TODO: find a better way to distinguish the two
             images, boxes, captions, ids, img_ids = zip(*data)
         elif len(data[0]) == 4:
             images, captions, ids, img_ids = zip(*data)
@@ -294,14 +297,17 @@ class Collate:
             cap_features = [torch.FloatTensor(f) for f in cap_features]
             wembeddings = [torch.FloatTensor(w) for w in wembeddings]
         else:
-            if self.vocab_type == 'bert':
+            if self.vocab_type == 'bert': 
                 cap_lengths = [len(self.tokenizer.tokenize(c)) + 2 for c in
-                           captions]  # + 2 in order to account for begin and end tokens
+                               captions]  # + 2 in order to account for begin and end tokens
                 max_len = max(cap_lengths)
-                captions_ids = [torch.LongTensor(self.tokenizer.encode(c, max_length=max_len, pad_to_max_length=True))
-                                for c in captions]
+                captions_token_ids = [torch.LongTensor(self.tokenizer.encode(c,
+                                                                             max_length=max_len,
+                                                                             padding='max_length',
+                                                                             truncation=True))
+                                      for c in captions]
 
-            captions = captions_ids
+            captions = captions_token_ids  # caption_ids are the token ids from bert tokenizer
         # Merge images (convert tuple of 3D tensor to 4D tensor)
         preextracted_images = not (images[0].shape[0] == 3)
         if not preextracted_images:
@@ -337,12 +343,18 @@ class Collate:
             targets = torch.zeros(len(captions), max(cap_lengths)).long()
             for i, cap in enumerate(captions):
                 end = cap_lengths[i]
-                targets[i, :end] = cap[:end]
+                targets[i, :end] = cap[:end]  #caption token ids
 
         if not preextracted_images:
             return images, targets, None, cap_lengths, None, ids
         else:
             # features = features.permute(0, 2, 1)
+            # img_features -> from FRCNN >> B x 2048
+            # targets -> padded caption token ids from BERT >> B x max_len(cap_lengths) or(queries)
+            # feat_lengths -> num of regions in the image (fixed to 36 + 1) >> B x 37
+            # cap_lengths -> true length of the non-padded captions or queries >> B x 1 (list of len B)
+            # out_boxes -> spatial information of the region boxes >> B x 37 x 4
+            # ids -> dataset indices wich are in this batch >> 1 x B (tuple of len B)
             return img_features, targets, feat_lengths, cap_lengths, out_boxes, ids
 
 
@@ -360,7 +372,7 @@ def get_loader_single(data_name, split, imgs_root, captions_json, transform, pre
             # COCO custom dataset
             dataset = CocoDataset(imgs_root=imgs_root,
                                   captions_json=captions_json,
-                                  transform=transform, ids=ids)
+                                  transform=transform, coco_annotation_ids=ids)
     elif 'f8k' in data_name or 'f30k' in data_name:
         if pre_extracted_root is not None:
             dataset = BottomUpFeaturesDataset(imgs_root=imgs_root,

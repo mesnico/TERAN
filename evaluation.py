@@ -10,66 +10,8 @@ import tqdm
 
 from evaluate_utils.dcg import DCG
 from models.loss import order_sim, AlignmentContrastiveLoss
-from utils import get_model
-from data import get_test_loader
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=0):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / (.0001 + self.count)
-
-    def __str__(self):
-        """String representation for logging
-        """
-        # for values that should be recorded exactly e.g. iteration number
-        if self.count == 0:
-            return str(self.val)
-        # for stats
-        return '%.4f (%.4f)' % (self.val, self.avg)
-
-
-class LogCollector(object):
-    """A collection of logging objects that can change from train to val"""
-
-    def __init__(self):
-        # to keep the order of logged variables deterministic
-        self.meters = OrderedDict()
-
-    def update(self, k, v, n=0):
-        # create a new meter if previously not recorded
-        if k not in self.meters:
-            self.meters[k] = AverageMeter()
-        self.meters[k].update(v, n)
-
-    def __str__(self):
-        """Concatenate the meters in one log line
-        """
-        s = ''
-        for i, (k, v) in enumerate(self.meters.items()):
-            if i > 0:
-                s += '  '
-            s += k + ' ' + str(v)
-        return s
-
-    def tb_log(self, tb_logger, prefix='', step=None):
-        """Log using tensorboard
-        """
-        for k, v in self.meters.items():
-            tb_logger.add_scalar(prefix + k, v.val, global_step=step)
+from utils import get_model, AverageMeter, LogCollector
+from data import get_coco_image_retrieval_data_loader, get_test_loader
 
 
 def encode_data(model, data_loader, log_step=10, logging=print):
@@ -108,14 +50,13 @@ def encode_data(model, data_loader, log_step=10, logging=print):
         else:
             text = targets
             captions = targets
-            wembeddings = model.img_txt_enc.txt_enc.word_embeddings(captions.cuda() if torch.cuda.is_available() else captions)
 
         # compute the embeddings
         with torch.no_grad():
             _, _, img_emb, cap_emb, cap_length = model.forward_emb(images, text, img_length, cap_length, boxes)
 
             # initialize the numpy arrays given the size of the embeddings
-            if img_embs is None:
+            if img_embs is None: # N x max_len x 1024
                 img_embs = torch.zeros((len(data_loader.dataset), max_img_len, img_emb.size(2)))
                 cap_embs = torch.zeros((len(data_loader.dataset), max_cap_len, cap_emb.size(2)))
 
@@ -237,7 +178,7 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
             print("Average t2i Recall: %.1f" % ari)
             print("Text to image: %.1f %.1f %.1f %.1f %.1f, ndcg_rouge=%.4f, ndcg_spice=%.4f" % ri)
 
-            print(f"Time elapsed for i2t evaluation without 5-fold CV: {time.time() - eval_t2i_start_time} seconds.")
+            print(f"Time elapsed for t2i evaluation without 5-fold CV: {time.time() - eval_t2i_start_time} seconds.")
 
         if eval_i2t and eval_t2i:
             rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
@@ -317,8 +258,8 @@ def evalrank(config, checkpoint, split='dev', fold5=False, eval_t2i=True, eval_i
     print(f"Time elapsed for evalrank(): {time.time() - evalrank_start_time} seconds.")
 
 
-
-def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=False, ndcg_scorer=None, fold_index=0, measure='dot', sim_function=None, cap_batches=1):
+def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=False, ndcg_scorer=None, fold_index=0,
+        measure='dot', sim_function=None, cap_batches=1):
     """
     Images->Text (Image Annotation)
     Images: (5N, K) matrix of images
@@ -404,7 +345,8 @@ def i2t(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=Fals
         return (r1, r5, r10, medr, meanr, mean_rougel_ndcg, mean_spice_ndcg)
 
 
-def t2i(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=False, ndcg_scorer=None, fold_index=0, measure='dot', sim_function=None, im_batches=1):
+def t2i(images, captions, img_lenghts, cap_lenghts, npts=None, return_ranks=False, ndcg_scorer=None, fold_index=0,
+        measure='dot', sim_function=None, im_batches=1):
     """
     Text->Images (Image Search)
     Images: (5N, K) matrix of images
