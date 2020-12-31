@@ -154,17 +154,24 @@ def get_precomputed_embeddings(config, opts, model):
 
     # compute the query embedding
     with torch.no_grad():
+        start_query_batch = time.time()
         query_token_pseudo_batch, query_lengths = dataset.get_query_pseudo_batch()
+        print(f'Time to get query pseudo batch: {time.time() - start_query_batch}')
+
+        start_query_enc = time.time()
         query_emb_aggr, query_emb, _ = model.forward_txt(query_token_pseudo_batch, query_lengths)
+        print(f'Time to compute query embedding: {time.time() - start_query_enc}')
+
 
         # store results as np arrays for further processing or persisting
         query_feat_dim = query_emb.size(2)
         query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
         query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
 
+
     # get the img embeddings and convert them to Tensors
-    np_img_embs = list(dataset.img_embs.values())
-    img_embs = torch.Tensor(np_img_embs)
+    np_img_embs = np.array(list(dataset.img_embs.values()))
+    img_embs = torch.Tensor(np_img_embs)  # here is the bottleneck
     img_length = len(np_img_embs[0])
     print(f"Time elapsed to load pre-computed embeddings and compute query embedding: {time.time() - start} seconds!")
     return img_embs, query_embs, img_length, query_lengths, dataset

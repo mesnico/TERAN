@@ -1,6 +1,9 @@
 import json as jsonmod
 import os
 import pickle
+import time
+from collections import OrderedDict
+from multiprocessing import Pool
 
 import numpy as np
 import torch
@@ -173,18 +176,26 @@ class CocoImageRetrievalDatasetBase:
         return img_metadata, coco_img_id
 
 
+# This has to be outside any class so that it can be pickled for multiproc
+def load_img_emb(args):
+    # just return the query and the img embedding
+    idx, file_name = args
+    npz = np.load(file_name)
+    img_emd = npz.get('img_emb')
+    return idx, img_emd
+
+
 class PreComputedCocoEmbeddingsDataset(CocoImageRetrievalDatasetBase):
     """
     Custom COCO Dataset that uses pre-computed image embedding
     """
 
-    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs, config):
+    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs, config, num_workers=32):
         CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, query, num_imgs)
 
         pre_computed_img_embeddings_root = config['image-retrieval']['pre_computed_img_embeddings_root']
         self.pre_computed_img_embeddings_root = pre_computed_img_embeddings_root
-
-        self.img_embs = {idx: self.__load_img_emb(idx) for idx in range(num_imgs)}
+        self.num_workers = num_workers
 
         self.vocab_type = str(config['text-model']['name']).lower()
         if self.vocab_type == 'bert':
@@ -192,17 +203,20 @@ class PreComputedCocoEmbeddingsDataset(CocoImageRetrievalDatasetBase):
         elif self.vocab_type != 'bert':
             raise ValueError("Currently only BERT Tokenizer is supported!")
 
-    def __load_img_emb(self, idx):
-        # just return the query and the img embedding
-        img_metadata, coco_img_id = self.get_image_metadata(idx)
-        file_name = img_metadata['file_name']
-        npz = np.load(os.path.join(self.pre_computed_img_embeddings_root, file_name + '.npz'))
-        img_emd = npz.get('img_emb')
+        self.img_embs = self.__load_img_embs()
 
-        return img_emd
-
-    def get_img_embs_and_lens(self):
-        return self.img_embs
+    def __load_img_embs(self):
+        start = time.time()
+        print('Parellel loading of pre-computed image embeddings started...')
+        file_names = list(map(lambda m: os.path.join(self.pre_computed_img_embeddings_root, m[0]['file_name'] + '.npz'),
+                              [self.get_image_metadata(i) for i in range(self.num_imgs)]))
+        # parallel loading of all image embeddings
+        with Pool(self.num_workers) as pool:
+            res = pool.map(load_img_emb, enumerate(file_names))
+        pool.join()
+        res = OrderedDict(res)
+        print(f'Time elapsed to load pre-computed image embeddings: {time.time() - start} seconds')
+        return res
 
     def get_query_pseudo_batch(self):
         # tokenize and encode the query
@@ -660,7 +674,7 @@ def get_loaders(config, workers, batch_size=None):
     return train_loader, val_loader
 
 
-def get_coco_image_retrieval_data(config, query, workers=None, pre_compute_img_embs=False):
+def get_coco_image_retrieval_data(config, query, num_workers=32, pre_compute_img_embs=False):
     # get the directories that contain the coco json files and coco annotation ids (which we may not need, I think)
     roots, coco_annotation_ids = get_paths(config)
 
@@ -681,7 +695,8 @@ def get_coco_image_retrieval_data(config, query, workers=None, pre_compute_img_e
                                                    coco_annotation_ids=coco_annotation_ids,
                                                    query=query,
                                                    num_imgs=num_imgs,
-                                                   config=config)
+                                                   config=config,
+                                                   num_workers=num_workers)
 
         return dataset
 
@@ -699,7 +714,7 @@ def get_coco_image_retrieval_data(config, query, workers=None, pre_compute_img_e
                                   batch_size=batch_size,
                                   shuffle=False,
                                   pin_memory=True,
-                                  num_workers=workers,
+                                  num_workers=num_workers,
                                   collate_fn=collate_fn)
 
     return data_loader
