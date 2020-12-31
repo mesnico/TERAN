@@ -162,12 +162,10 @@ def get_precomputed_embeddings(config, opts, model):
         query_emb_aggr, query_emb, _ = model.forward_txt(query_token_pseudo_batch, query_lengths)
         print(f'Time to compute query embedding: {time.time() - start_query_enc}')
 
-
         # store results as np arrays for further processing or persisting
         query_feat_dim = query_emb.size(2)
         query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
         query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
-
 
     # get the img embeddings and convert them to Tensors
     np_img_embs = np.array(list(dataset.img_embs.values()))
@@ -191,7 +189,7 @@ def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
         # returns a Dataloader of a PreComputedCocoFeaturesDataset
         data_loader = get_coco_image_retrieval_data(config,
                                                     query=opts.query,
-                                                    workers=opts.num_data_workers)
+                                                    num_workers=opts.num_data_workers)
         dataset = data_loader.dataset
         # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
         img_embs, query_embs, img_lengths, query_lengths = encode_data_for_inference(model, data_loader)
@@ -233,7 +231,7 @@ def pre_compute_img_embeddings(opts, config, checkpoint):
     print('Loading dataset')
     data_loader = get_coco_image_retrieval_data(config,
                                                 query=opts.query,
-                                                workers=opts.num_data_workers,
+                                                num_workers=opts.num_data_workers,
                                                 pre_compute_img_embs=True)
 
     # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
@@ -270,6 +268,8 @@ if __name__ == '__main__':
 
     if not opts.pre_compute_img_embeddings:
         top_k_matches = top_k_image_retrieval(opts, model_config, model_checkpoint)
+        print(f"##########################################")
+        print(f"QUERY: {opts.query}")
         print(f"######## TOP {opts.top_k} RESULTS ########")
         print(top_k_matches)
     else:
