@@ -332,12 +332,13 @@ class InferenceCollate(object):
 
         return super(InferenceCollate, cls).__new__(cls)
 
-    def __init__(self, config):
+    def __init__(self, config, pre_compute_img_embs):
         self.vocab_type = str(config['text-model']['name']).lower()
         self.create_query_batch = bool(config['image-retrieval']['create_query_batch'])
-        if self.vocab_type == 'bert':
+        self.pre_compute_img_embs = pre_compute_img_embs
+        if self.vocab_type == 'bert' and not pre_compute_img_embs:
             self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
-        else:
+        elif self.vocab_type != 'bert':
             raise ValueError("Currently only BERT Tokenizer is supported!")
 
     @classmethod
@@ -378,7 +379,7 @@ class InferenceCollate(object):
         """
 
         # encode (tokenize) the query
-        if self.query_token_ids is None:
+        if self.query_token_ids is None and not self.pre_compute_img_embs:
             # we don't need to pad or truncate since we only have a single query
             # TODO actually we don't even need the tokenizer twice so we could just use a local variable
             query_token_ids = torch.LongTensor(self.tokenizer.encode(queries[0]))
@@ -407,7 +408,7 @@ class InferenceCollate(object):
         for i, box in enumerate(img_feat_bboxes):
             img_feat_bboxes_batch[i, 1:] = box
 
-        if self.create_query_batch:
+        if self.create_query_batch and not self.pre_compute_img_embs:
             # create the full query batch of size B x |Q|
             # since the token id is a scalar, the dim is 1 and whe don't need to add it to the batch
             # for the BERT embeddings the ids have to be Long
@@ -415,10 +416,14 @@ class InferenceCollate(object):
             for i in range(len(queries)):
                 query_token_ids_batch[i] = self.query_token_ids
             query_lengths = [self.query_length for _ in range(batch_size)]
-        else:
+        elif not self.create_query_batch and not self.pre_compute_img_embs:
             # create a pseudo query batch with only one element of size 1 x |Q|
             query_token_ids_batch = self.query_token_ids.unsqueeze(dim=0)
             query_lengths = [self.query_length]
+        else:  # self.pre_compute_img_embs == True
+            # when pre-computing the image embeddings, we don't need (and have) information about the query
+            query_token_ids_batch = None
+            query_lengths = None
 
         return img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_ids_batch, query_lengths, dataset_indices
 
@@ -605,7 +610,7 @@ def get_loaders(config, workers, batch_size=None):
     return train_loader, val_loader
 
 
-def get_coco_image_retrieval_data_loader(config, workers, query):
+def get_coco_image_retrieval_data_loader(config, workers, query, pre_compute_img_embs=False):
     # create the dataset + loader
     # 1) load / create a Coco Dataset to get meta info about images (we could also do this by hand)
     # 2) choose (the first) N images and create a dataset with N samples where each sample consists of the n-th image
@@ -635,7 +640,7 @@ def get_coco_image_retrieval_data_loader(config, workers, query):
                                         num_imgs=num_imgs)
 
     # this creates the batches which get passed to the model (inside the query gets repeated or not based on the config)
-    collate_fn = InferenceCollate(config)
+    collate_fn = InferenceCollate(config, pre_compute_img_embs)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=False,

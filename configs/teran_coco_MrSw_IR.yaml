@@ -13,8 +13,8 @@ image-retrieval:
   pre_extracted_img_features_root: 'data/coco/features_36'
   create_query_batch: False
   alignment_mode: 'MrSw'
-
-
+  use_precomputed_img_embeddings: False
+  pre_computed_img_embeddings_root: 'data/coco/pre_computed_embeddings'
 
 text-model:
   name: 'bert'

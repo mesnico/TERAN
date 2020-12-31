@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -15,14 +16,26 @@ from models.teran import TERAN
 from utils import AverageMeter, LogCollector
 
 
-def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=print):
+def persist_img_embs(config, data_loader, dataset_indices, numpy_img_emb):
+    dst_root = Path(os.getcwd()).joinpath(config['image-retrieval']['pre_computed_img_embeddings_root'])
+    if not dst_root.exists():
+        dst_root.mkdir(parents=True, exist_ok=True)
+
+    assert len(dataset_indices) == len(numpy_img_emb)
+    img_names = get_image_names(dataset_indices, data_loader)
+    # TODO do we want to store them in one big npz?
+    for idx in range(len(img_names)):
+        dst = dst_root.joinpath(img_names[idx] + '.npz')
+        if dst.exists():
+            continue
+        np.savez_compressed(str(dst), img_emb=numpy_img_emb[idx])
+
+
+def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=print, pre_compute_img_embs=False):
     # compute the embedding vectors v_i, s_j (paper) for each image region and word respectively
     # -> forwarding the data through the respective TE stacks
-    print('Computing image and query embeddings...')
-    encode_data_start_time = time.time()
-
-    batch_time = AverageMeter()
-    val_logger = LogCollector()
+    print(
+        f'{"Pre-" if pre_compute_img_embs else ""}Computing image {"" if pre_compute_img_embs else "and query "}embeddings...')
 
     # we don't need autograd for inference
     model.eval()
@@ -35,56 +48,61 @@ def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=pr
     img_embs = None
 
     # make sure val logger is used
+    batch_time = AverageMeter()
+    val_logger = LogCollector()
     model.logger = val_logger
 
     start_time = time.time()
-    for i, (img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_id_batch, query_lengths_batch,
+    for i, (img_feature_batch, img_feat_bboxes_batch, img_feat_len_batch, query_token_batch, query_len_batch,
             dataset_indices) in enumerate(data_loader):
+        batch_start_time = time.time()
+        """
+        the data loader returns None values for the respective batches if the only query was already loaded 
+        -> query_token_batch, query_len_batch = None, None
+        """
 
-        if query_embs is not None:
-            # set the query batch to None so it doesn't get forwarded by TERAN again (to safe computation)
-            query_token_id_batch = None
-            query_lengths_batch = None
-
-        # compute the embeddings
         with torch.no_grad():
-            # TODO inside model.forward_emb we have to adapt the code for only a single query so that it doesn't get
-            # computed each time
-            _, _, img_emb, query_emb, _ = model.forward_emb(img_feature_batch,
-                                                            query_token_id_batch,
-                                                            img_feat_lengths,
-                                                            query_lengths_batch,
-                                                            img_feat_bboxes_batch)
+            # compute the query embedding only in the first iteration (also because there is only 1 query in IR)
+            if query_embs is None and not pre_compute_img_embs:
+                # TODO maybe we can get the most matching roi from query_emb_aggr?
+                query_emb_aggr, query_emb, _ = model.forward_txt_emb(query_token_batch, query_len_batch)
 
-            # initialize the arrays given the size of the embeddings
-            if img_embs is None:
-                num_img_feats = img_feat_lengths[0] if isinstance(img_feat_lengths, list) else img_feat_lengths
-                num_query_feats = query_lengths_batch[0] if isinstance(query_lengths_batch,
-                                                                       list) else query_lengths_batch
-                img_feat_dim = img_emb.size(2)
+                # store results as np arrays for further processing or persisting
+                num_query_feats = query_len_batch[0] if isinstance(query_len_batch, list) else query_len_batch
                 query_feat_dim = query_emb.size(2)
-                img_embs = torch.zeros((len(data_loader.dataset), num_img_feats, img_feat_dim))
                 query_embs = torch.zeros((1, num_query_feats, query_feat_dim))
                 query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
 
-            # preserve the embeddings by copying from gpu and converting to numpy
-            # TODO we could persist them on the disk to further save time
-            img_embs[dataset_indices, :, :] = img_emb.cpu().permute(1, 0, 2)
+            # compute every image embedding in the dataset
+            img_emb_aggr, img_emb = model.forward_img_emb(img_feature_batch, img_feat_len_batch, img_feat_bboxes_batch)
+
+            # init array to store results for further processing or persisting
+            if img_embs is None:
+                num_img_feats = img_feat_len_batch[0] if isinstance(img_feat_len_batch,
+                                                                    list) else img_feat_len_batch
+                img_feat_dim = img_emb.size(2)
+                img_embs = torch.zeros((len(data_loader.dataset), num_img_feats, img_feat_dim))
+
+            numpy_img_emb = img_emb.cpu().permute(1, 0, 2)  # why are we permuting here? -> TERAN
+            img_embs[dataset_indices, :, :] = numpy_img_emb
+            if pre_compute_img_embs:
+                # if we are in a pre-compute run, persist the arrays
+                persist_img_embs(model_config, data_loader, dataset_indices, numpy_img_emb)
 
         # measure elapsed time per batch
-        batch_time.update(time.time() - start_time)
-        start_time = time.time()
+        batch_time.update(time.time() - batch_start_time)
 
         if i % log_step == 0:
             logging(
                 f"Batch: [{i}/{len(data_loader)}]\t{str(model.logger)}\tTime {batch_time.val:.3f} ({batch_time.avg:.3f})")
-        del img_feature_batch, query_token_id_batch
+        del img_feature_batch, query_token_batch
 
-    print(f"Time elapsed to encode data: {time.time() - encode_data_start_time} seconds.")
+    print(
+        f"Time elapsed to {'encode' if not pre_compute_img_embs else 'encode and persist'} data: {time.time() - start_time} seconds.")
     return img_embs, query_embs, num_img_feats, num_query_feats
 
 
-def compute_distance_sorted_indices(img_embs, query_embs, img_lengths, query_lengths, config):
+def compute_distances(img_embs, query_embs, img_lengths, query_lengths, config):
     # initialize similarity matrix evaluator
     sim_matrix_fn = AlignmentContrastiveLoss(aggregation=config['image-retrieval']['alignment_mode'],
                                              return_similarity_mat=True)
@@ -124,8 +142,8 @@ def compute_distance_sorted_indices(img_embs, query_embs, img_lengths, query_len
     return sorted_distance_indices
 
 
-def get_image_names(top_k_indices, data_loader) -> List[str]:
-    return [data_loader.dataset.get_image_metadata(idx)['file_name'] for idx in top_k_indices]
+def get_image_names(dataset_indices, data_loader) -> List[str]:
+    return [data_loader.dataset.get_image_metadata(idx)['file_name'] for idx in dataset_indices]
 
 
 def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
@@ -147,7 +165,7 @@ def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
     print(f"Images: {img_embs.shape[0]}, Captions: {cap_embs.shape[0]}")
 
     # compute the matching scores
-    distance_sorted_indices = compute_distance_sorted_indices(img_embs, cap_embs, img_lengths, cap_lengths, config)
+    distance_sorted_indices = compute_distances(img_embs, cap_embs, img_lengths, cap_lengths, config)
     top_k_indices = distance_sorted_indices[:opts.top_k]
 
     # get the image names
@@ -170,6 +188,24 @@ def prepare_model_checkpoint_and_config(opts):
     return model_checkpoint_config, checkpoint
 
 
+def pre_compute_img_embeddings(opts, config, checkpoint):
+    # construct model
+    model = TERAN(config)
+
+    # load model state
+
+    model.load_state_dict(checkpoint['model'], strict=False)
+
+    print('Loading dataset')
+    data_loader = get_coco_image_retrieval_data_loader(config,
+                                                       query=opts.query,
+                                                       workers=opts.num_data_workers,
+                                                       pre_compute_img_embs=True)
+
+    # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
+    encode_data_for_inference(model, data_loader, pre_compute_img_embs=True)
+
+
 if __name__ == '__main__':
     print("CUDA_VISIBLE_DEVICES: " + os.getenv("CUDA_VISIBLE_DEVICES", "NOT SET - ABORTING"))
     if os.getenv("CUDA_VISIBLE_DEVICES", None) is None:
@@ -178,21 +214,29 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str,
                         help="Model (checkpoint) to load. E.g. pretrained_models/coco_MrSw.pth.tar", required=True)
-    parser.add_argument('--query', type=str, required=True)
-    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'],
-                        default='cuda')  # cpu is only for local test runs
+    parser.add_argument('--pre_compute_img_embeddings', action='store_true', help="If set or true, the image "
+                                                                                  "embeddings get precomputed and "
+                                                                                  "persisted at the directory "
+                                                                                  "specified in the config.")
+    parser.add_argument('--query', type=str, required='--pre_compute_img_embeddings' not in sys.argv)
     parser.add_argument('--num_data_workers', type=int, default=8)
     parser.add_argument('--num_images', type=int, default=5000)
     parser.add_argument('--top_k', type=int, default=100)
     parser.add_argument('--dataset', type=str, choices=['coco'], default='coco')  # TODO support other datasets
-    parser.add_argument('--config', type=str, default='configs/teran_coco_MrSw_IR.yaml',
-                        help="Which configuration to use for overriding the checkpoint configuration. See into "
-                             "'config' folder")
+    parser.add_argument('--config', type=str, default='configs/teran_coco_MrSw_IR.yaml', help="Which configuration to "
+                                                                                              "use for overriding the"
+                                                                                              " checkpoint "
+                                                                                              "configuration. See "
+                                                                                              "into 'config' folder")
+    # cpu is only for local test runs
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     opts = parser.parse_args()
 
     model_config, model_checkpoint = prepare_model_checkpoint_and_config(opts)
 
-    top_k_matches = top_k_image_retrieval(opts, model_config, model_checkpoint)
-
-    print(f"######## TOP {opts.top_k} RESULTS ########")
-    print(top_k_matches)
+    if not opts.pre_compute_img_embeddings:
+        top_k_matches = top_k_image_retrieval(opts, model_config, model_checkpoint)
+        print(f"######## TOP {opts.top_k} RESULTS ########")
+        print(top_k_matches)
+    else:
+        pre_compute_img_embeddings(opts, model_config, model_checkpoint)
