@@ -147,21 +147,87 @@ class CocoDataset(data.Dataset):
         return len(self.annotation_ids)
 
 
-class CocoImageRetrievalDataset(data.Dataset):
+class CocoImageRetrievalDatasetBase:
+    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs):
+        self.query = query
+        self.num_imgs = num_imgs
+
+        self.coco = COCO(captions_json)
+        self.anno_ids = coco_annotation_ids
+
+    def get_raw_item(self, idx):
+        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
+        ann_id = self.anno_ids[next_img_idx]
+        coco_img_id = self.coco.anns[ann_id]['image_id']
+        img_metadata = self.coco.imgs[coco_img_id]
+        img_size = np.array([img_metadata['width'], img_metadata['height']])
+
+        return coco_img_id, img_size
+
+    def get_image_metadata(self, idx):
+        # TODO can't we just get coco.imgs[idx'] somehow?
+        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
+        ann_id = self.anno_ids[next_img_idx]
+        coco_img_id = self.coco.anns[ann_id]['image_id']
+        img_metadata = self.coco.imgs[coco_img_id]
+        return img_metadata, coco_img_id
+
+
+class PreComputedCocoEmbeddingsDataset(CocoImageRetrievalDatasetBase):
+    """
+    Custom COCO Dataset that uses pre-computed image embedding
+    """
+
+    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs, config):
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, query, num_imgs)
+
+        pre_computed_img_embeddings_root = config['image-retrieval']['pre_computed_img_embeddings_root']
+        self.pre_computed_img_embeddings_root = pre_computed_img_embeddings_root
+
+        self.img_embs = {idx: self.__load_img_emb(idx) for idx in range(num_imgs)}
+
+        self.vocab_type = str(config['text-model']['name']).lower()
+        if self.vocab_type == 'bert':
+            self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
+        elif self.vocab_type != 'bert':
+            raise ValueError("Currently only BERT Tokenizer is supported!")
+
+    def __load_img_emb(self, idx):
+        # just return the query and the img embedding
+        img_metadata, coco_img_id = self.get_image_metadata(idx)
+        file_name = img_metadata['file_name']
+        npz = np.load(os.path.join(self.pre_computed_img_embeddings_root, file_name + '.npz'))
+        img_emd = npz.get('img_emb')
+
+        return img_emd
+
+    def get_img_embs_and_lens(self):
+        return self.img_embs
+
+    def get_query_pseudo_batch(self):
+        # tokenize and encode the query
+        query_token_ids = torch.LongTensor(self.tokenizer.encode(self.query))
+        # create a pseudo batch suitable for TERAN
+        query_token_pseudo_batch = query_token_ids.unsqueeze(dim=0)
+        query_lengths = [len(query_token_ids)]
+        return query_token_pseudo_batch, query_lengths
+
+    def __len__(self):
+        return self.num_imgs
+
+
+class PreComputedCocoFeaturesDataset(CocoImageRetrievalDatasetBase, data.Dataset):
     """
     Custom COCO Dataset that uses only the images together with a user query.
     Compatible with torch.utils.data.DataLoader.
     """
 
     def __init__(self, imgs_root, img_features_path, captions_json, coco_annotation_ids, query, num_imgs):
-        self.query = query
-        self.num_imgs = num_imgs
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, query, num_imgs)
+
         self.feats_data_path = os.path.join(img_features_path, 'bu_att')
         self.box_data_path = os.path.join(img_features_path, 'bu_box')
         self.imgs_root = imgs_root
-
-        self.coco = COCO(captions_json)
-        self.anno_ids = coco_annotation_ids
 
     def __getitem__(self, idx):
         """
@@ -184,23 +250,6 @@ class CocoImageRetrievalDataset(data.Dataset):
         # we always return the query here since we want to compute the similarity of each image with the query
         # this output is the input of the CollateFn
         return img_feat, img_feat_box, img_id, self.query, idx
-
-    def get_raw_item(self, idx):
-        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
-        ann_id = self.anno_ids[next_img_idx]
-        img_id = self.coco.anns[ann_id]['image_id']
-        img_metadata = self.coco.imgs[img_id]
-        img_size = np.array([img_metadata['width'], img_metadata['height']])
-
-        return img_id, img_size
-
-    def get_image_metadata(self, idx):
-        # TODO can't we just get coco.imgs[idx'] somehow?
-        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
-        ann_id = self.anno_ids[next_img_idx]
-        img_id = self.coco.anns[ann_id]['image_id']
-        img_metadata = self.coco.imgs[img_id]
-        return img_metadata
 
     def __len__(self):
         return self.num_imgs
@@ -333,9 +382,9 @@ class InferenceCollate(object):
         return super(InferenceCollate, cls).__new__(cls)
 
     def __init__(self, config, pre_compute_img_embs):
-        self.vocab_type = str(config['text-model']['name']).lower()
         self.create_query_batch = bool(config['image-retrieval']['create_query_batch'])
         self.pre_compute_img_embs = pre_compute_img_embs
+        self.vocab_type = str(config['text-model']['name']).lower()
         if self.vocab_type == 'bert' and not pre_compute_img_embs:
             self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
         elif self.vocab_type != 'bert':
@@ -362,6 +411,7 @@ class InferenceCollate(object):
         img_feats, img_feat_bboxes, img_ids, queries, dataset_indices = zip(*data)
         """
         Build batch tensors from a list of (img_feats, img_feat_boxes, img_ids, queries, dataset_indices) tuples.
+        This data comes from the dataset
             Args:
                 - img_feats:
                 - img_feat_bboxes:
@@ -462,7 +512,7 @@ class Collate:
             cap_features = [torch.FloatTensor(f) for f in cap_features]
             wembeddings = [torch.FloatTensor(w) for w in wembeddings]
         else:
-            if self.vocab_type == 'bert': 
+            if self.vocab_type == 'bert':
                 cap_lengths = [len(self.tokenizer.tokenize(c)) + 2 for c in
                                captions]  # + 2 in order to account for begin and end tokens
                 max_len = max(cap_lengths)
@@ -508,7 +558,7 @@ class Collate:
             targets = torch.zeros(len(captions), max(cap_lengths)).long()
             for i, cap in enumerate(captions):
                 end = cap_lengths[i]
-                targets[i, :end] = cap[:end]  #caption token ids
+                targets[i, :end] = cap[:end]  # caption token ids
 
         if not preextracted_images:
             return images, targets, None, cap_lengths, None, ids
@@ -610,12 +660,7 @@ def get_loaders(config, workers, batch_size=None):
     return train_loader, val_loader
 
 
-def get_coco_image_retrieval_data_loader(config, workers, query, pre_compute_img_embs=False):
-    # create the dataset + loader
-    # 1) load / create a Coco Dataset to get meta info about images (we could also do this by hand)
-    # 2) choose (the first) N images and create a dataset with N samples where each sample consists of the n-th image
-    #    and the query (gets repeated N times) # TODO maybe this is not necessary
-
+def get_coco_image_retrieval_data(config, query, workers=None, pre_compute_img_embs=False):
     # get the directories that contain the coco json files and coco annotation ids (which we may not need, I think)
     roots, coco_annotation_ids = get_paths(config)
 
@@ -625,28 +670,37 @@ def get_coco_image_retrieval_data_loader(config, workers, query, pre_compute_img
 
     imgs_root = roots[split_name]['img']
 
-    # for images we use pre-extracted features (not for text)
-    pre_extracted_img_features_root = config['image-retrieval']['pre_extracted_img_features_root']
-
     captions_json = roots[split_name]['cap']
     coco_annotation_ids = coco_annotation_ids[split_name]
     num_imgs = config['image-retrieval']['num_imgs']
+    pre_extracted_img_features_root = config['image-retrieval']['pre_extracted_img_features_root']
 
-    dataset = CocoImageRetrievalDataset(imgs_root=imgs_root,
-                                        img_features_path=pre_extracted_img_features_root,
-                                        captions_json=captions_json,
-                                        coco_annotation_ids=coco_annotation_ids,
-                                        query=query,
-                                        num_imgs=num_imgs)
+    use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
+    if use_precomputed_img_embeddings:
+        dataset = PreComputedCocoEmbeddingsDataset(captions_json=captions_json,
+                                                   coco_annotation_ids=coco_annotation_ids,
+                                                   query=query,
+                                                   num_imgs=num_imgs,
+                                                   config=config)
+
+        return dataset
+
+    dataset = PreComputedCocoFeaturesDataset(imgs_root=imgs_root,
+                                             img_features_path=pre_extracted_img_features_root,
+                                             captions_json=captions_json,
+                                             coco_annotation_ids=coco_annotation_ids,
+                                             query=query,
+                                             num_imgs=num_imgs)
 
     # this creates the batches which get passed to the model (inside the query gets repeated or not based on the config)
     collate_fn = InferenceCollate(config, pre_compute_img_embs)
-    data_loader = torch.utils.data.DataLoader(dataset=dataset,
-                                              batch_size=batch_size,
-                                              shuffle=False,
-                                              pin_memory=True,
-                                              num_workers=workers,
-                                              collate_fn=collate_fn)
+
+    data_loader = data.DataLoader(dataset=dataset,
+                                  batch_size=batch_size,
+                                  shuffle=False,
+                                  pin_memory=True,
+                                  num_workers=workers,
+                                  collate_fn=collate_fn)
 
     return data_loader
 

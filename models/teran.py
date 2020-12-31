@@ -219,7 +219,7 @@ class TERAN(torch.nn.Module):
 
         return img_emb_aggr, cap_emb_aggr, img_feats, cap_feats, cap_len
 
-    def forward_txt_emb(self, captions, cap_len):
+    def forward_txt(self, captions, cap_len):
         """
         compute txt embeddings only
         """
@@ -230,7 +230,7 @@ class TERAN(torch.nn.Module):
             cap_feats, cap_len = self.remove_stopwords(captions, cap_feats, cap_len)
         return cap_emb_aggr, cap_feats, cap_len
 
-    def forward_img_emb(self, images, img_len, boxes):
+    def forward_img(self, images, img_len, boxes):
         """
         compute img embeddings only
         """

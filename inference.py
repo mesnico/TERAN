@@ -10,7 +10,7 @@ import torch
 import tqdm
 import yaml
 
-from data import get_coco_image_retrieval_data_loader
+from data import get_coco_image_retrieval_data
 from models.loss import AlignmentContrastiveLoss
 from models.teran import TERAN
 from utils import AverageMeter, LogCollector
@@ -65,7 +65,7 @@ def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=pr
             # compute the query embedding only in the first iteration (also because there is only 1 query in IR)
             if query_embs is None and not pre_compute_img_embs:
                 # TODO maybe we can get the most matching roi from query_emb_aggr?
-                query_emb_aggr, query_emb, _ = model.forward_txt_emb(query_token_batch, query_len_batch)
+                query_emb_aggr, query_emb, _ = model.forward_txt(query_token_batch, query_len_batch)
 
                 # store results as np arrays for further processing or persisting
                 num_query_feats = query_len_batch[0] if isinstance(query_len_batch, list) else query_len_batch
@@ -74,7 +74,7 @@ def encode_data_for_inference(model: TERAN, data_loader, log_step=10, logging=pr
                 query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
 
             # compute every image embedding in the dataset
-            img_emb_aggr, img_emb = model.forward_img_emb(img_feature_batch, img_feat_len_batch, img_feat_bboxes_batch)
+            img_emb_aggr, img_emb = model.forward_img(img_feature_batch, img_feat_len_batch, img_feat_bboxes_batch)
 
             # init array to store results for further processing or persisting
             if img_embs is None:
@@ -142,8 +142,32 @@ def compute_distances(img_embs, query_embs, img_lengths, query_lengths, config):
     return sorted_distance_indices
 
 
-def get_image_names(dataset_indices, data_loader) -> List[str]:
-    return [data_loader.dataset.get_image_metadata(idx)['file_name'] for idx in dataset_indices]
+def get_image_names(dataset_indices, dataset) -> List[str]:
+    return [dataset.get_image_metadata(idx)[0]['file_name'] for idx in dataset_indices]
+
+
+def get_precomputed_embeddings(config, opts, model):
+    print("Loading pre-computed image embeddings...")
+    start = time.time()
+    # returns a PreComputedCocoEmbeddingsDataset
+    dataset = get_coco_image_retrieval_data(config, query=opts.query)
+
+    # compute the query embedding
+    with torch.no_grad():
+        query_token_pseudo_batch, query_lengths = dataset.get_query_pseudo_batch()
+        query_emb_aggr, query_emb, _ = model.forward_txt(query_token_pseudo_batch, query_lengths)
+
+        # store results as np arrays for further processing or persisting
+        query_feat_dim = query_emb.size(2)
+        query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
+        query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
+
+    # get the img embeddings and convert them to Tensors
+    np_img_embs = list(dataset.img_embs.values())
+    img_embs = torch.Tensor(np_img_embs)
+    img_length = len(np_img_embs[0])
+    print(f"Time elapsed to load pre-computed embeddings and compute query embedding: {time.time() - start} seconds!")
+    return img_embs, query_embs, img_length, query_lengths, dataset
 
 
 def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
@@ -153,23 +177,27 @@ def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
     # load model state
     model.load_state_dict(checkpoint['model'], strict=False)
 
-    print('Loading dataset')
-    data_loader = get_coco_image_retrieval_data_loader(config,
-                                                       query=opts.query,
-                                                       workers=opts.num_data_workers)
-
-    # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
-    img_embs, cap_embs, img_lengths, cap_lengths = encode_data_for_inference(model, data_loader)
+    use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
+    if use_precomputed_img_embeddings:
+        img_embs, query_embs, img_lengths, query_lengths, dataset = get_precomputed_embeddings(config, opts, model)
+    else:
+        # returns a Dataloader of a PreComputedCocoFeaturesDataset
+        data_loader = get_coco_image_retrieval_data(config,
+                                                    query=opts.query,
+                                                    workers=opts.num_data_workers)
+        dataset = data_loader.dataset
+        # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
+        img_embs, query_embs, img_lengths, query_lengths = encode_data_for_inference(model, data_loader)
 
     torch.cuda.empty_cache()
-    print(f"Images: {img_embs.shape[0]}, Captions: {cap_embs.shape[0]}")
+    print(f"Images Embeddings: {img_embs.shape[0]}, Query Embeddings: {query_embs.shape[0]}")
 
     # compute the matching scores
-    distance_sorted_indices = compute_distances(img_embs, cap_embs, img_lengths, cap_lengths, config)
+    distance_sorted_indices = compute_distances(img_embs, query_embs, img_lengths, query_lengths, config)
     top_k_indices = distance_sorted_indices[:opts.top_k]
 
     # get the image names
-    top_k_images = get_image_names(top_k_indices, data_loader)
+    top_k_images = get_image_names(top_k_indices, dataset)
     return top_k_images
 
 
@@ -193,14 +221,13 @@ def pre_compute_img_embeddings(opts, config, checkpoint):
     model = TERAN(config)
 
     # load model state
-
     model.load_state_dict(checkpoint['model'], strict=False)
 
     print('Loading dataset')
-    data_loader = get_coco_image_retrieval_data_loader(config,
-                                                       query=opts.query,
-                                                       workers=opts.num_data_workers,
-                                                       pre_compute_img_embs=True)
+    data_loader = get_coco_image_retrieval_data(config,
+                                                query=opts.query,
+                                                workers=opts.num_data_workers,
+                                                pre_compute_img_embs=True)
 
     # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
     encode_data_for_inference(model, data_loader, pre_compute_img_embs=True)

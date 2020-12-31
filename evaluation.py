@@ -10,7 +10,7 @@ import tqdm
 from evaluate_utils.dcg import DCG
 from models.loss import order_sim, AlignmentContrastiveLoss
 from utils import get_model, AverageMeter, LogCollector
-from data import get_coco_image_retrieval_data_loader, get_test_loader
+from data import get_coco_image_retrieval_data, get_test_loader
 
 
 def encode_data(model, data_loader, log_step=10, logging=print):
