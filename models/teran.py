@@ -51,61 +51,41 @@ class JointTextImageTransformerEncoder(nn.Module):
         self.text_aggregation_type = config['model']['text-aggregation']
         self.img_aggregation_type = config['model']['image-aggregation']
 
-    def forward(self, features, captions, feat_len, cap_len, boxes):
-        if captions is not None:
-            # process captions by using bert
-            full_cap_emb_aggr, c_emb = self.txt_enc(captions, cap_len)  # B x S x cap_dim
-        else:
-            full_cap_emb_aggr, full_cap_emb = None, None
-
-        # process image regions using a two-layer transformer
-        full_img_emb_aggr, i_emb = self.img_enc(features, feat_len, boxes)  # B x S x vis_dim
-        # i_emb = i_emb.permute(1, 0, 2)                             # B x S x vis_dim
-
-        # if False:
-        #     # concatenate the embeddings together
-        #     max_summed_lengths = max([x + y for x, y in zip(feat_len, cap_len)])
-        #     i_c_emb = torch.zeros(bs, max_summed_lengths, self.embed_size)
-        #     i_c_emb = i_c_emb.to(features.device)
-        #     mask = torch.zeros(bs, max_summed_lengths).bool()
-        #     mask = mask.to(features.device)
-        #     for i_c, m, i, c, i_len, c_len in zip(i_c_emb, mask, i_emb, c_emb, feat_len, cap_len):
-        #         i_c[:c_len] = c[:c_len]
-        #         i_c[c_len:c_len + i_len] = i[:i_len]
-        #         m[c_len + i_len:] = True
-        #
-        #     i_c_emb = i_c_emb.permute(1, 0, 2)      # S_vis + S_txt x B x dim
-        #     out = self.transformer_encoder(i_c_emb, src_key_padding_mask=mask)      # S_vis + S_txt x B x dim
-        #
-        #     full_cap_emb = out[0, :, :]
-        #     I = torch.LongTensor(cap_len).view(1, -1, 1)
-        #     I = I.expand(1, bs, self.embed_size).to(features.device)
-        #     full_img_emb = torch.gather(out, dim=0, index=I).squeeze(0)
-        # else:
+    def forward_txt(self, captions, cap_len):
+        # process captions by using bert
+        full_cap_emb_aggr, c_emb = self.txt_enc(captions, cap_len)  # B x S x cap_dim
 
         # forward the captions
         if self.text_aggregation_type is not None:
-            if captions is not None:
-                c_emb = self.cap_proj(c_emb)
+            c_emb = self.cap_proj(c_emb)
 
-                cap_bs = captions.shape[0]
-                mask = torch.zeros(cap_bs, max(cap_len)).bool()
-                mask = mask.to(features.device)
-                for m, c_len in zip(mask, cap_len):
-                    m[c_len:] = True
-                full_cap_emb = self.transformer_encoder_1(c_emb.permute(1, 0, 2),
-                                                          src_key_padding_mask=mask)  # S_txt x B x dim
-                full_cap_emb_aggr = self.text_aggregation(full_cap_emb, cap_len, mask)
+            cap_bs = captions.shape[0]
+            mask = torch.zeros(cap_bs, max(cap_len)).bool()
+            mask = mask.to(captions.device)
+            for m, c_len in zip(mask, cap_len):
+                m[c_len:] = True
+            full_cap_emb = self.transformer_encoder_1(c_emb.permute(1, 0, 2),
+                                                      src_key_padding_mask=mask)  # S_txt x B x dim
+            full_cap_emb_aggr = self.text_aggregation(full_cap_emb, cap_len, mask)
 
-                full_cap_emb_aggr = l2norm(full_cap_emb_aggr)
+            full_cap_emb_aggr = l2norm(full_cap_emb_aggr)
 
-                # normalize even every vector of the set
-                full_cap_emb = F.normalize(full_cap_emb, p=2, dim=2)
+            # normalize even every vector of the set
+            full_cap_emb = F.normalize(full_cap_emb, p=2, dim=2)
         # else use the embedding output by the txt model
-        elif self.text_aggregation_type is None:
+        else:
             full_cap_emb = None
 
+        if self.order_embeddings:
+            full_cap_emb_aggr = torch.abs(full_cap_emb_aggr)
+
+        return full_cap_emb_aggr, full_cap_emb
+
+    def forward_img(self, features, feat_len, boxes):
+        # process image regions using a two-layer transformer
+        full_img_emb_aggr, i_emb = self.img_enc(features, feat_len, boxes)  # B x S x vis_dim
         # forward the regions
+
         if self.img_aggregation_type is not None:
             i_emb = self.img_proj(i_emb)
 
@@ -116,11 +96,12 @@ class JointTextImageTransformerEncoder(nn.Module):
                 m[v_len:] = True
             if self.shared_transformer:
                 full_img_emb = self.transformer_encoder_1(i_emb.permute(1, 0, 2),
-                                                          src_key_padding_mask=mask)  # S_txt x B x dim
+                                                          src_key_padding_mask=mask)  # S_img x B x dim
             else:
                 full_img_emb = self.transformer_encoder_2(i_emb.permute(1, 0, 2),
-                                                          src_key_padding_mask=mask)  # S_txt x B x dim
+                                                          src_key_padding_mask=mask)  # S_img x B x dim
             full_img_emb_aggr = self.image_aggregation(full_img_emb, feat_len, mask)
+
             full_img_emb_aggr = l2norm(full_img_emb_aggr)
             # normalize even every vector of the set
             full_img_emb = F.normalize(full_img_emb, p=2, dim=2)
@@ -128,9 +109,22 @@ class JointTextImageTransformerEncoder(nn.Module):
             full_img_emb = None
 
         if self.order_embeddings:
-            if captions is not None:
-                full_cap_emb_aggr = torch.abs(full_cap_emb_aggr)
             full_img_emb_aggr = torch.abs(full_img_emb_aggr)
+
+        return full_img_emb_aggr, full_img_emb
+
+    def forward(self, features, captions, feat_len, cap_len, boxes):
+        if captions is not None:
+            # process captions
+            full_cap_emb_aggr, full_cap_emb = self.forward_txt(captions, cap_len)
+        else:
+            full_cap_emb_aggr, full_cap_emb = None, None
+
+        if features is not None:
+            # process image regions
+            full_img_emb_aggr, full_img_emb = self.forward_img(features, feat_len, boxes)
+        else:
+            full_img_emb_aggr, full_img_emb = None, None
 
         return full_img_emb_aggr, full_cap_emb_aggr, full_img_emb, full_cap_emb
 
@@ -191,14 +185,29 @@ class TERAN(torch.nn.Module):
     #     self.img_enc.eval()
     #     self.txt_enc.eval()
 
+    def remove_stopwords(self, captions, cap_feats, cap_len):
+        # remove stopwords
+        # keep only word indexes that are not stopwords
+        good_word_indexes = [[i for i, (tok, w) in enumerate(zip(self.tokenizer.convert_ids_to_tokens(ids), ids)) if
+                              tok not in self.en_stops or w == 0] for ids in captions]  # keeps the padding
+        cap_len = [len(w) - (cap_feats.shape[0] - orig_len) for w, orig_len in zip(good_word_indexes, cap_len)]
+        min_cut_len = min([len(w) for w in good_word_indexes])
+        good_word_indexes = [words[:min_cut_len] for words in good_word_indexes]
+        good_word_indexes = torch.LongTensor(good_word_indexes).to(cap_feats.device)  # B x S
+        good_word_indexes = good_word_indexes.t().unsqueeze(2).expand(-1, -1, cap_feats.shape[2])  # S x B x dim
+        cap_feats = cap_feats.gather(dim=0, index=good_word_indexes)
+
+        return cap_feats, cap_len
+
     def forward_emb(self, images, captions, img_len, cap_len, boxes):
         """
         Compute the image and caption embeddings
         """
         # Set mini-batch dataset
         if torch.cuda.is_available():
-            images = images.cuda()
-            boxes = boxes.cuda()
+            if images is not None and boxes is not None:
+                images = images.cuda()
+                boxes = boxes.cuda()
             if captions is not None:
                 captions = captions.cuda()
 
@@ -206,18 +215,30 @@ class TERAN(torch.nn.Module):
         img_emb_aggr, cap_emb_aggr, img_feats, cap_feats = self.img_txt_enc(images, captions, img_len, cap_len, boxes)
 
         if self.tokenizer is not None and captions is not None:
-            # remove stopwords
-            # keep only word indexes that are not stopwords
-            good_word_indexes = [[i for i, (tok, w) in enumerate(zip(self.tokenizer.convert_ids_to_tokens(ids), ids)) if
-                                  tok not in self.en_stops or w == 0] for ids in captions]  # keeps the padding
-            cap_len = [len(w) - (cap_feats.shape[0] - orig_len) for w, orig_len in zip(good_word_indexes, cap_len)]
-            min_cut_len = min([len(w) for w in good_word_indexes])
-            good_word_indexes = [words[:min_cut_len] for words in good_word_indexes]
-            good_word_indexes = torch.LongTensor(good_word_indexes).to(cap_feats.device)  # B x S
-            good_word_indexes = good_word_indexes.t().unsqueeze(2).expand(-1, -1, cap_feats.shape[2])  # S x B x dim
-            cap_feats = cap_feats.gather(dim=0, index=good_word_indexes)
+            cap_feats, cap_len = self.remove_stopwords(captions, cap_feats, cap_len)
 
         return img_emb_aggr, cap_emb_aggr, img_feats, cap_feats, cap_len
+
+    def forward_txt_emb(self, captions, cap_len):
+        """
+        compute txt embeddings only
+        """
+        if torch.cuda.is_available():
+            captions = captions.cuda()
+        cap_emb_aggr, cap_feats = self.img_txt_enc.forward_txt(captions, cap_len)
+        if self.tokenizer is not None and captions is not None:
+            cap_feats, cap_len = self.remove_stopwords(captions, cap_feats, cap_len)
+        return cap_emb_aggr, cap_feats, cap_len
+
+    def forward_img_emb(self, images, img_len, boxes):
+        """
+        compute img embeddings only
+        """
+        if torch.cuda.is_available():
+            images = images.cuda()
+            boxes = boxes.cuda()
+        img_emb_aggr, img_feats = self.img_txt_enc.forward_img(images, img_len, boxes)
+        return img_emb_aggr, img_feats
 
     def get_parameters(self):
         lr_multiplier = 1.0 if self.config['text-model']['fine-tune'] else 0.0
@@ -279,8 +300,11 @@ class TERAN(torch.nn.Module):
                 captions.cuda() if torch.cuda.is_available() else captions)
 
         # compute the embeddings
-        img_emb_aggr, cap_emb_aggr, img_feats, cap_feats, cap_lengths = self.forward_emb(images, text, img_lengths,
-                                                                                         cap_lengths, boxes)
+        img_emb_aggr, cap_emb_aggr, img_feats, cap_feats, cap_lengths = self.forward_emb(images,
+                                                                                         text,
+                                                                                         img_lengths,
+                                                                                         cap_lengths,
+                                                                                         boxes)
         # NOTE: img_feats and cap_feats are S x B x dim
 
         loss_dict = self.forward_loss(img_emb_aggr, cap_emb_aggr, img_feats, cap_feats, img_lengths, cap_lengths)
