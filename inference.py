@@ -146,31 +146,35 @@ def get_image_names(dataset_indices, dataset) -> List[str]:
     return [dataset.get_image_metadata(idx)[1]['file_name'] for idx in dataset_indices]
 
 
-def load_precomputed_image_embeddings(config):
+def load_precomputed_image_embeddings(config, num_workers):
     print("Loading pre-computed image embeddings...")
     start = time.time()
     # returns a PreComputedCocoImageEmbeddingsDataset
-    dataset = get_coco_image_retrieval_data(config)
+    dataset = get_coco_image_retrieval_data(config, num_workers=num_workers)
 
     # get the img embeddings and convert them to Tensors
     np_img_embs = np.array(list(dataset.img_embs.values()))
-    img_embs = torch.Tensor(np_img_embs)  # here is the bottleneck
+    img_embs = torch.Tensor(np_img_embs)
     img_lengths = len(np_img_embs[0])
     print(f"Time elapsed to load pre-computed embeddings and compute query embedding: {time.time() - start} seconds!")
     return img_embs, img_lengths, dataset
 
 
-def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
+def load_teran(config, checkpoint):
     # construct model
     model = TERAN(config)
-
     # load model state
     model.load_state_dict(checkpoint['model'], strict=False)
+    return model
+
+
+def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
+    model = load_teran(config, checkpoint)
 
     use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
     if use_precomputed_img_embeddings:
         # load pre computed img embs
-        img_embs, img_lengths, dataset = load_precomputed_image_embeddings(config)
+        img_embs, img_lengths, dataset = load_precomputed_image_embeddings(config, num_workers=opts.num_data_workers)
         # compute query emb
         query_encoder = QueryEncoder(config, model)
         query_embs, query_lengths = query_encoder.compute_query_embedding(opts.query)
