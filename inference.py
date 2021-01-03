@@ -10,7 +10,7 @@ import torch
 import tqdm
 import yaml
 
-from data import get_coco_image_retrieval_data
+from data import get_coco_image_retrieval_data, QueryEncoder
 from models.loss import AlignmentContrastiveLoss
 from models.teran import TERAN
 from utils import AverageMeter, LogCollector
@@ -143,36 +143,21 @@ def compute_distances(img_embs, query_embs, img_lengths, query_lengths, config):
 
 
 def get_image_names(dataset_indices, dataset) -> List[str]:
-    return [dataset.get_image_metadata(idx)[0]['file_name'] for idx in dataset_indices]
+    return [dataset.get_image_metadata(idx)[1]['file_name'] for idx in dataset_indices]
 
 
-def get_precomputed_embeddings(config, opts, model):
+def load_precomputed_image_embeddings(config):
     print("Loading pre-computed image embeddings...")
     start = time.time()
-    # returns a PreComputedCocoEmbeddingsDataset
-    dataset = get_coco_image_retrieval_data(config, query=opts.query)
-
-    # compute the query embedding
-    with torch.no_grad():
-        start_query_batch = time.time()
-        query_token_pseudo_batch, query_lengths = dataset.get_query_pseudo_batch()
-        print(f'Time to get query pseudo batch: {time.time() - start_query_batch}')
-
-        start_query_enc = time.time()
-        query_emb_aggr, query_emb, _ = model.forward_txt(query_token_pseudo_batch, query_lengths)
-        print(f'Time to compute query embedding: {time.time() - start_query_enc}')
-
-        # store results as np arrays for further processing or persisting
-        query_feat_dim = query_emb.size(2)
-        query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
-        query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
+    # returns a PreComputedCocoImageEmbeddingsDataset
+    dataset = get_coco_image_retrieval_data(config)
 
     # get the img embeddings and convert them to Tensors
     np_img_embs = np.array(list(dataset.img_embs.values()))
     img_embs = torch.Tensor(np_img_embs)  # here is the bottleneck
-    img_length = len(np_img_embs[0])
+    img_lengths = len(np_img_embs[0])
     print(f"Time elapsed to load pre-computed embeddings and compute query embedding: {time.time() - start} seconds!")
-    return img_embs, query_embs, img_length, query_lengths, dataset
+    return img_embs, img_lengths, dataset
 
 
 def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
@@ -184,7 +169,12 @@ def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
 
     use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
     if use_precomputed_img_embeddings:
-        img_embs, query_embs, img_lengths, query_lengths, dataset = get_precomputed_embeddings(config, opts, model)
+        # load pre computed img embs
+        img_embs, img_lengths, dataset = load_precomputed_image_embeddings(config)
+        # compute query emb
+        query_encoder = QueryEncoder(config, model)
+        query_embs, query_lengths = query_encoder.compute_query_embedding(opts.query)
+
     else:
         # returns a Dataloader of a PreComputedCocoFeaturesDataset
         data_loader = get_coco_image_retrieval_data(config,
@@ -194,7 +184,9 @@ def top_k_image_retrieval(opts, config, checkpoint) -> List[str]:
         # encode the data (i.e. compute the embeddings / TE outputs for the images and query)
         img_embs, query_embs, img_lengths, query_lengths = encode_data_for_inference(model, data_loader)
 
-    torch.cuda.empty_cache()
+    if opts.device == "cuda":
+        torch.cuda.empty_cache()
+
     print(f"Images Embeddings: {img_embs.shape[0]}, Query Embeddings: {query_embs.shape[0]}")
 
     # compute the matching scores

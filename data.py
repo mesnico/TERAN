@@ -151,29 +151,18 @@ class CocoDataset(data.Dataset):
 
 
 class CocoImageRetrievalDatasetBase:
-    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs):
-        self.query = query
+    def __init__(self, captions_json, coco_annotation_ids, num_imgs):
         self.num_imgs = num_imgs
 
         self.coco = COCO(captions_json)
         self.anno_ids = coco_annotation_ids
 
-    def get_raw_item(self, idx):
-        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
-        ann_id = self.anno_ids[next_img_idx]
-        coco_img_id = self.coco.anns[ann_id]['image_id']
-        img_metadata = self.coco.imgs[coco_img_id]
-        img_size = np.array([img_metadata['width'], img_metadata['height']])
-
-        return coco_img_id, img_size
-
     def get_image_metadata(self, idx):
-        # TODO can't we just get coco.imgs[idx'] somehow?
         next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
         ann_id = self.anno_ids[next_img_idx]
         coco_img_id = self.coco.anns[ann_id]['image_id']
         img_metadata = self.coco.imgs[coco_img_id]
-        return img_metadata, coco_img_id
+        return coco_img_id, img_metadata
 
 
 # This has to be outside any class so that it can be pickled for multiproc
@@ -185,30 +174,24 @@ def load_img_emb(args):
     return idx, img_emd
 
 
-class PreComputedCocoEmbeddingsDataset(CocoImageRetrievalDatasetBase):
+class PreComputedCocoImageEmbeddingsDataset(CocoImageRetrievalDatasetBase):
     """
     Custom COCO Dataset that uses pre-computed image embedding
     """
 
-    def __init__(self, captions_json, coco_annotation_ids, query, num_imgs, config, num_workers=32):
-        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, query, num_imgs)
+    def __init__(self, captions_json, coco_annotation_ids, num_imgs, config, num_workers=32):
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, num_imgs)
 
         pre_computed_img_embeddings_root = config['image-retrieval']['pre_computed_img_embeddings_root']
         self.pre_computed_img_embeddings_root = pre_computed_img_embeddings_root
         self.num_workers = num_workers
 
-        self.vocab_type = str(config['text-model']['name']).lower()
-        if self.vocab_type == 'bert':
-            self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
-        elif self.vocab_type != 'bert':
-            raise ValueError("Currently only BERT Tokenizer is supported!")
-
         self.img_embs = self.__load_img_embs()
 
     def __load_img_embs(self):
         start = time.time()
-        print('Parellel loading of pre-computed image embeddings started...')
-        file_names = list(map(lambda m: os.path.join(self.pre_computed_img_embeddings_root, m[0]['file_name'] + '.npz'),
+        print('Parallel loading of pre-computed image embeddings started...')
+        file_names = list(map(lambda m: os.path.join(self.pre_computed_img_embeddings_root, m[1]['file_name'] + '.npz'),
                               [self.get_image_metadata(i) for i in range(self.num_imgs)]))
         # parallel loading of all image embeddings
         with Pool(self.num_workers) as pool:
@@ -218,16 +201,45 @@ class PreComputedCocoEmbeddingsDataset(CocoImageRetrievalDatasetBase):
         print(f'Time elapsed to load pre-computed image embeddings: {time.time() - start} seconds')
         return res
 
-    def get_query_pseudo_batch(self):
+    def __len__(self):
+        return self.num_imgs
+
+
+class QueryEncoder:
+    def __init__(self, config, model):
+        self.vocab_type = str(config['text-model']['name']).lower()
+        if self.vocab_type == 'bert':
+            self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
+        elif self.vocab_type != 'bert':
+            raise ValueError("Currently only BERT Tokenizer is supported!")
+
+        self.model = model
+
+    def _get_query_pseudo_batch(self, query: str):
         # tokenize and encode the query
-        query_token_ids = torch.LongTensor(self.tokenizer.encode(self.query))
+        query_token_ids = torch.LongTensor(self.tokenizer.encode(query))
         # create a pseudo batch suitable for TERAN
         query_token_pseudo_batch = query_token_ids.unsqueeze(dim=0)
         query_lengths = [len(query_token_ids)]
         return query_token_pseudo_batch, query_lengths
 
-    def __len__(self):
-        return self.num_imgs
+    def compute_query_embedding(self, query):
+        # compute the query embedding
+        with torch.no_grad():
+            start_query_batch = time.time()
+            query_token_pseudo_batch, query_lengths = self._get_query_pseudo_batch(query)
+            print(f'Time to get query pseudo batch: {time.time() - start_query_batch}')
+
+            start_query_enc = time.time()
+            query_emb_aggr, query_emb, _ = self.model.forward_txt(query_token_pseudo_batch, query_lengths)
+            print(f'Time to compute query embedding: {time.time() - start_query_enc}')
+
+            # store results as np arrays for further processing or persisting
+            query_feat_dim = query_emb.size(2)
+            query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
+            query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
+
+        return query_embs, query_lengths
 
 
 class PreComputedCocoFeaturesDataset(CocoImageRetrievalDatasetBase, data.Dataset):
@@ -237,17 +249,19 @@ class PreComputedCocoFeaturesDataset(CocoImageRetrievalDatasetBase, data.Dataset
     """
 
     def __init__(self, imgs_root, img_features_path, captions_json, coco_annotation_ids, query, num_imgs):
-        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, query, num_imgs)
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, num_imgs)
 
         self.feats_data_path = os.path.join(img_features_path, 'bu_att')
         self.box_data_path = os.path.join(img_features_path, 'bu_box')
         self.imgs_root = imgs_root
+        self.query = query
 
     def __getitem__(self, idx):
         """
         This function returns a tuple that is further passed to collate_fn
         """
-        img_id, img_size = self.get_raw_item(idx)
+        img_id, img_metadata = self.get_image_metadata(idx)
+        img_size = np.array([img_metadata['width'], img_metadata['height']])
 
         img_feat_path = os.path.join(self.feats_data_path, '{}.npz'.format(img_id))
         img_box_path = os.path.join(self.box_data_path, '{}.npy'.format(img_id))
@@ -674,7 +688,7 @@ def get_loaders(config, workers, batch_size=None):
     return train_loader, val_loader
 
 
-def get_coco_image_retrieval_data(config, query, num_workers=32, pre_compute_img_embs=False):
+def get_coco_image_retrieval_data(config, query=None, num_workers=32, pre_compute_img_embs=False):
     # get the directories that contain the coco json files and coco annotation ids (which we may not need, I think)
     roots, coco_annotation_ids = get_paths(config)
 
@@ -691,13 +705,11 @@ def get_coco_image_retrieval_data(config, query, num_workers=32, pre_compute_img
 
     use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
     if use_precomputed_img_embeddings:
-        dataset = PreComputedCocoEmbeddingsDataset(captions_json=captions_json,
-                                                   coco_annotation_ids=coco_annotation_ids,
-                                                   query=query,
-                                                   num_imgs=num_imgs,
-                                                   config=config,
-                                                   num_workers=num_workers)
-
+        dataset = PreComputedCocoImageEmbeddingsDataset(captions_json=captions_json,
+                                                        coco_annotation_ids=coco_annotation_ids,
+                                                        num_imgs=num_imgs,
+                                                        config=config,
+                                                        num_workers=num_workers)
         return dataset
 
     dataset = PreComputedCocoFeaturesDataset(imgs_root=imgs_root,
