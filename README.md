@@ -33,6 +33,11 @@ export PYTHONPATH=.
 ```
 
 ## Get the data
+NOTE: Due to a NAS failure, the files below are temporarily moved to Google Drive and can be downloaded from there:
+https://drive.google.com/drive/folders/1njEa9t7TXRX6GIbj31LUu4cCDx_sImzK?usp=sharing
+
+Unfortunately, we could not upload the pre-extracted features from Flickr-30k. File `features_36.tar` contains only those from MS-COCO. We hope to solve our NAS problem as soon as possible.
+
 1. Download and extract the data folder, containing annotations, the splits by Karpathy et al. and ROUGEL - SPICE precomputed relevances for both COCO and Flickr30K datasets:
 
 ```
