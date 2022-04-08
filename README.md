@@ -34,7 +34,7 @@ export PYTHONPATH=.
 
 ## Get the data
 NOTE: Due to a NAS failure, the files below are temporarily moved to Google Drive and can be downloaded from there:
-https://drive.google.com/drive/folders/1njEa9t7TXRX6GIbj31LUu4cCDx_sImzK?usp=sharing
+https://drive.google.com/drive/folders/17rZmJJdFQyRFHCn1PIEJT8HO6_Bj0Imi?usp=sharing
 
 Unfortunately, we could not upload the pre-extracted features from Flickr-30k. File `features_36.tar` contains only those from MS-COCO. We hope to solve our NAS problem as soon as possible.
 
