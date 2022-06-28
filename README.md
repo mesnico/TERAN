@@ -85,11 +85,15 @@ WIP
 ## Reference
 If you found this code useful, please cite the following paper:
 
-    @article{messina2020finegrained,
-      title={Fine-grained Visual Textual Alignment for Cross-Modal Retrieval using Transformer Encoders},
-      author={Nicola Messina and Giuseppe Amato and Andrea Esuli and Fabrizio Falchi and Claudio Gennaro and Stéphane Marchand-Maillet},
-      journal={arXiv preprint arXiv:2008.05231},
-      year={2020},
+    @article{messina2021fine,
+      title={Fine-grained visual textual alignment for cross-modal retrieval using transformer encoders},
+      author={Messina, Nicola and Amato, Giuseppe and Esuli, Andrea and Falchi, Fabrizio and Gennaro, Claudio and Marchand-Maillet, St{\'e}phane},
+      journal={ACM Transactions on Multimedia Computing, Communications, and Applications (TOMM)},
+      volume={17},
+      number={4},
+      pages={1--23},
+      year={2021},
+      publisher={ACM New York, NY}
     }
 
 ## License
