@@ -39,35 +39,28 @@ export PYTHONPATH=.
 ```
 
 ## Get the data
-NOTE: Due to a NAS failure, the files below are temporarily moved to Google Drive and can be downloaded from there:
-https://drive.google.com/drive/folders/17rZmJJdFQyRFHCn1PIEJT8HO6_Bj0Imi?usp=sharing
+Data and pretrained models be downloaded from this [OneDrive link](https://cnrsc-my.sharepoint.com/:f:/g/personal/nicola_messina_cnr_it/EnsuSFo-rG5Pmf2FhQDPe7EBCHrNtR1ujSIOEcgaj5Xrwg?e=Ger6Sl) (see the steps below to understand which files you need):
 
-Unfortunately, we could not upload the pre-extracted features from Flickr-30k. File `features_36.tar` contains only those from MS-COCO. We hope to solve our NAS problem as soon as possible.
-
-1. Download and extract the data folder, containing annotations, the splits by Karpathy et al. and ROUGEL - SPICE precomputed relevances for both COCO and Flickr30K datasets:
+1. Download and extract the data folder, containing annotations, the splits by Karpathy et al. and ROUGEL - SPICE precomputed relevances for both COCO and Flickr30K datasets. Extract it:
 
 ```
-wget http://datino.isti.cnr.it/teran/data.tar
-tar -xvf data.tar
+tar -xvf data.tgz
 ```
 
 2. Download the bottom-up features for both COCO and Flickr30K. We use the code by [Anderson et al.](https://github.com/peteanderson80/bottom-up-attention) for extracting them.
 The following command extracts them under `data/coco/` and `data/f30k/`. If you prefer another location, be sure to adjust the configuration file accordingly.
 ```
 # for MS-COCO
-wget http://datino.isti.cnr.it/teran/features_36_coco.tar
-tar -xvf features_36_coco.tar -C data/coco
+tar -xvf features_36_coco.tgz -C data/coco
 
 # for Flickr30k
-wget http://datino.isti.cnr.it/teran/features_36_f30k.tar
-tar -xvf features_36_f30k.tar -C data/f30k
+tar -xvf features_36_f30k.tgz -C data/f30k
 ```
 
 ## Evaluate
-Download and extract our pre-trained TERAN models:
+Extract our pre-trained TERAN models:
 ```
-wget http://datino.isti.cnr.it/teran/pretrained_models.tar
-tar -xvf pretrained_models.tar
+tar -xvf TERAN_pretrained_models.tgz
 ```
 
 Then, issue the following commands for evaluating a given model on the 1k (5fold cross-validation) or 5k test sets.
