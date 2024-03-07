@@ -58,7 +58,7 @@ class EncoderTextGRU(nn.Module):
         # Reshape *final* output to (batch_size, hidden_size)
         padded = pad_packed_sequence(out, batch_first=True)
         I = torch.LongTensor(lengths).view(-1, 1, 1)
-        I = (I.expand(x.size(0), 1, self.embed_size)-1).to(x.device)
+        I = (I.expand(x.size(0), 1, self.embed_size) - 1).to(x.device)
         out = torch.gather(padded[0], 1, I).squeeze(1)
 
         # normalization in the joint embedding space
@@ -105,6 +105,8 @@ class EncoderTextBERT(nn.Module):
         lengths: tensor of lengths (LongTensor) of size B
         '''
         if not self.preextracted or self.post_transformer_layers > 0:
+            # this code builds the attention_mask so that its 1 for every valid token and pads 0 for the max len
+            # attention_mask is a kinda padding
             max_len = max(lengths)
             attention_mask = torch.ones(x.shape[0], max_len)
             for e, l in zip(attention_mask, lengths):
@@ -115,7 +117,8 @@ class EncoderTextBERT(nn.Module):
             outputs = x
         else:
             outputs = self.bert_model(x, attention_mask=attention_mask)
-            outputs = outputs[2][-1]
+            #  https://huggingface.co/transformers/model_doc/bert.html#bertmodel
+            outputs = outputs[2][-1]  # -> hidden_states[-1]
 
         if self.post_transformer_layers > 0:
             outputs = outputs.permute(1, 0, 2)
@@ -124,7 +127,7 @@ class EncoderTextBERT(nn.Module):
         if self.mean:
             x = outputs.mean(dim=1)
         else:
-            x = outputs[:, 0, :]     # from the last layer take only the first word
+            x = outputs[:, 0, :]  # from the last layer take only the first word
 
         out = self.map(x)
 

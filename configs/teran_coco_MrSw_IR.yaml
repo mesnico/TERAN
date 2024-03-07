@@ -1,0 +1,63 @@
+dataset:
+  name: 'coco'
+  images-path: 'data/coco/images'  # not needed if using pre-extracted bottom-up features
+  data: 'data'
+  restval: True
+  pre-extracted-features: False
+
+image-retrieval:
+  dataset: 'coco' # for now only coco support
+  split: 'test' # we can remove this in later versions
+  num_imgs: 5000
+  batch_size: 100 # 100 takes ~10s; 1000 takes ~14s to encode the data (compute the TE outputs)
+  pre_extracted_img_features_root: 'data/coco/features_36'
+  create_query_batch: False
+  alignment_mode: 'MrSw'
+  use_precomputed_img_embeddings: False
+  pre_computed_img_embeddings_root: 'data/coco/pre_computed_embeddings'
+
+text-model:
+  name: 'bert'
+  pretrain: 'bert-base-uncased'
+  word-dim: 768
+  extraction-hidden-layer: 6
+  fine-tune: True
+  pre-extracted: False
+  layers: 0
+  dropout: 0.1
+
+image-model:
+  name: 'bottomup'
+  pre-extracted-features-root: 'data/coco/features_36'
+  transformer-layers: 4
+  dropout: 0.1
+  pos-encoding: 'concat-and-process'
+  crop-size: 224  # not used
+  fine-tune: False
+  feat-dim: 2048
+  norm: True
+
+model:
+  name: 'teran'
+  embed-size: 1024
+  text-aggregation: 'first'
+  image-aggregation: 'first'
+  layers: 2
+  exclude-stopwords: False
+  shared-transformer: False
+  dropout: 0.1
+
+training:
+  lr: 0.00001  # 0.000006
+  grad-clip: 2.0
+  max-violation: True
+  loss-type: 'alignment'
+  alignment-mode: 'MrSw'
+  measure: 'dot'
+  margin: 0.2
+  bs: 40
+  scheduler: 'steplr'
+  gamma: 0.1
+  step-size: 20
+  warmup: null
+  warmup-period: 1000

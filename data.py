@@ -1,39 +1,42 @@
+import json as jsonmod
+import os
+import pickle
+import time
+from collections import OrderedDict
+from multiprocessing import Pool
+
+import numpy as np
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
-import os
-import nltk
+import tqdm
 from PIL import Image
 from pycocotools.coco import COCO
-import numpy as np
-import json as jsonmod
-from collections.abc import Sequence
-import shelve
 from transformers import BertTokenizer
-import pickle
-import tqdm
 
 from features import HuggingFaceTransformerExtractor
 
 
 def get_paths(config):
+    # noinspection PyIncorrectDocstring
+    # noinspection PyUnresolvedReferences
     """
-    Returns paths to images and annotations for the given datasets. For MSCOCO
-    indices are also returned to control the data split being used.
-    The indices are extracted from the Karpathy et al. splits using this
-    snippet:
+        Returns paths to images and annotations for the given datasets. For MSCOCO
+        indices are also returned to control the data split being used.
+        The indices are extracted from the Karpathy et al. splits using this
+        snippet:
 
-    >>> import json
-    >>> dataset=json.load(open('dataset_coco.json','r'))
-    >>> A=[]
-    >>> for i in range(len(D['images'])):
-    ...   if D['images'][i]['split'] == 'val':
-    ...     A+=D['images'][i]['sentids'][:5]
-    ...
+        >>> import json
+        >>> dataset=json.load(open('dataset_coco.json','r'))
+        >>> A=[]
+        >>> for i in range(len(D['images'])):
+        ...   if D['images'][i]['split'] == 'val':
+        ...     A+=D['images'][i]['sentids'][:5]
+        ...
 
-    :param name: Dataset names
-    :param use_restval: If True, the the `restval` data is included in train.
-    """
+        :param name: Dataset names
+        :param use_restval: If True, the the `restval` data is included in train.
+        """
     name = config['dataset']['name']
     annotations_path = os.path.join(config['dataset']['data'], name, 'annotations')
     use_restval = config['dataset']['restval']
@@ -64,7 +67,8 @@ def get_paths(config):
         ids['test'] = np.load(os.path.join(annotations_path, 'coco_test_ids.npy'))
         ids['trainrestval'] = (
             ids['train'],
-            np.load(os.path.join(annotations_path, 'coco_restval_ids.npy')))
+            np.load(os.path.join(annotations_path, 'coco_restval_ids.npy'))
+        )
         if use_restval:
             roots['train'] = roots['trainrestval']
             ids['train'] = ids['trainrestval']
@@ -82,33 +86,33 @@ def get_paths(config):
 class CocoDataset(data.Dataset):
     """COCO Custom Dataset compatible with torch.utils.data.DataLoader."""
 
-    def __init__(self, root, json, transform=None, ids=None, get_images=True):
+    def __init__(self, imgs_root, captions_json, transform=None, coco_annotation_ids=None, get_images=True):
         """
         Args:
-            root: image directory.
-            json: coco annotation file path.
+            imgs_root: image directory.
+            captions_json: coco annotation file path.
             transform: transformer for image.
         """
-        self.root = root
+        self.root = imgs_root
         self.get_images = get_images
         # when using `restval`, two json files are needed
-        if isinstance(json, tuple):
-            self.coco = (COCO(json[0]), COCO(json[1]))
+        if isinstance(captions_json, tuple):
+            self.coco = (COCO(captions_json[0]), COCO(captions_json[1]))
         else:
-            self.coco = (COCO(json),)
-            self.root = (root,)
+            self.coco = (COCO(captions_json),)
+            self.root = (imgs_root,)
         # if ids provided by get_paths, use split-specific ids
-        if ids is None:
-            self.ids = list(self.coco.anns.keys())
+        if coco_annotation_ids is None:
+            self.annotation_ids = list(self.coco[0].anns.keys())
         else:
-            self.ids = ids
+            self.annotation_ids = coco_annotation_ids
 
         # if `restval` data is to be used, record the break point for ids
-        if isinstance(self.ids, tuple):
-            self.bp = len(self.ids[0])
-            self.ids = list(self.ids[0]) + list(self.ids[1])
+        if isinstance(self.annotation_ids, tuple):
+            self.bp = len(self.annotation_ids[0])
+            self.annotation_ids = list(self.annotation_ids[0]) + list(self.annotation_ids[1])
         else:
-            self.bp = len(self.ids)
+            self.bp = len(self.annotation_ids)
         self.transform = transform
 
     def __getitem__(self, index):
@@ -123,17 +127,17 @@ class CocoDataset(data.Dataset):
         return image, target, index, img_id
 
     def get_raw_item(self, index, load_image=True):
-        if index < self.bp:
+        if index < self.bp:  # bp -> breakpoint to stop after N samples
             coco = self.coco[0]
             root = self.root[0]
         else:
             coco = self.coco[1]
             root = self.root[1]
-        ann_id = self.ids[index]
+        ann_id = self.annotation_ids[index]
         caption = coco.anns[ann_id]['caption']
         img_id = coco.anns[ann_id]['image_id']
-        img = coco.imgs[img_id]
-        img_size = np.array([img['width'], img['height']])
+        img_metadata = coco.imgs[img_id]
+        img_size = np.array([img_metadata['width'], img_metadata['height']])
         if load_image:
             path = coco.loadImgs(img_id)[0]['file_name']
             image = Image.open(os.path.join(root, path)).convert('RGB')
@@ -143,18 +147,151 @@ class CocoDataset(data.Dataset):
             return root, caption, img_id, None, None, img_size
 
     def __len__(self):
-        return len(self.ids)
+        return len(self.annotation_ids)
+
+
+class CocoImageRetrievalDatasetBase:
+    def __init__(self, captions_json, coco_annotation_ids, num_imgs):
+        self.num_imgs = num_imgs
+
+        self.coco = COCO(captions_json)
+        self.anno_ids = coco_annotation_ids
+
+    def get_image_metadata(self, idx):
+        next_img_idx = idx * 5  # in the coco dataset there are 5 captions for every image
+        ann_id = self.anno_ids[next_img_idx]
+        coco_img_id = self.coco.anns[ann_id]['image_id']
+        img_metadata = self.coco.imgs[coco_img_id]
+        return coco_img_id, img_metadata
+
+
+# This has to be outside any class so that it can be pickled for multiproc
+def load_img_emb(args):
+    # just return the query and the img embedding
+    idx, file_name = args
+    npz = np.load(file_name)
+    img_emd = npz.get('img_emb')
+    return idx, img_emd
+
+
+class PreComputedCocoImageEmbeddingsDataset(CocoImageRetrievalDatasetBase):
+    """
+    Custom COCO Dataset that uses pre-computed image embedding
+    """
+
+    def __init__(self, captions_json, coco_annotation_ids, num_imgs, config, num_workers=32):
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, num_imgs)
+
+        pre_computed_img_embeddings_root = config['image-retrieval']['pre_computed_img_embeddings_root']
+        self.pre_computed_img_embeddings_root = pre_computed_img_embeddings_root
+        self.num_workers = num_workers
+
+        self.img_embs = self.__load_img_embs()
+
+    def __load_img_embs(self):
+        start = time.time()
+        print('Parallel loading of pre-computed image embeddings started...')
+        file_names = list(map(lambda m: os.path.join(self.pre_computed_img_embeddings_root, m[1]['file_name'] + '.npz'),
+                              [self.get_image_metadata(i) for i in range(self.num_imgs)]))
+        # parallel loading of all image embeddings
+        with Pool(self.num_workers) as pool:
+            res = pool.map(load_img_emb, enumerate(file_names))
+        pool.join()
+        res = OrderedDict(res)
+        print(f'Time elapsed to load pre-computed image embeddings: {time.time() - start} seconds')
+        return res
+
+    def __len__(self):
+        return self.num_imgs
+
+
+class QueryEncoder:
+    def __init__(self, config, model):
+        self.vocab_type = str(config['text-model']['name']).lower()
+        if self.vocab_type == 'bert':
+            self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
+        elif self.vocab_type != 'bert':
+            raise ValueError("Currently only BERT Tokenizer is supported!")
+
+        self.model = model
+
+    def _get_query_pseudo_batch(self, query: str):
+        # tokenize and encode the query
+        query_token_ids = torch.LongTensor(self.tokenizer.encode(query))
+        # create a pseudo batch suitable for TERAN
+        query_token_pseudo_batch = query_token_ids.unsqueeze(dim=0)
+        query_lengths = [len(query_token_ids)]
+        return query_token_pseudo_batch, query_lengths
+
+    def compute_query_embedding(self, query):
+        # compute the query embedding
+        with torch.no_grad():
+            start_query_batch = time.time()
+            query_token_pseudo_batch, query_lengths = self._get_query_pseudo_batch(query)
+            print(f'Time to get query pseudo batch: {time.time() - start_query_batch}')
+
+            start_query_enc = time.time()
+            query_emb_aggr, query_emb, _ = self.model.forward_txt(query_token_pseudo_batch, query_lengths)
+            print(f'Time to compute query embedding: {time.time() - start_query_enc}')
+
+            # store results as np arrays for further processing or persisting
+            query_feat_dim = query_emb.size(2)
+            query_embs = torch.zeros((1, query_lengths[0], query_feat_dim), requires_grad=False)
+            query_embs[0, :, :] = query_emb.cpu().permute(1, 0, 2)
+
+        return query_embs, query_lengths
+
+
+class PreComputedCocoFeaturesDataset(CocoImageRetrievalDatasetBase, data.Dataset):
+    """
+    Custom COCO Dataset that uses only the images together with a user query.
+    Compatible with torch.utils.data.DataLoader.
+    """
+
+    def __init__(self, imgs_root, img_features_path, captions_json, coco_annotation_ids, query, num_imgs):
+        CocoImageRetrievalDatasetBase.__init__(self, captions_json, coco_annotation_ids, num_imgs)
+
+        self.feats_data_path = os.path.join(img_features_path, 'bu_att')
+        self.box_data_path = os.path.join(img_features_path, 'bu_box')
+        self.imgs_root = imgs_root
+        self.query = query
+
+    def __getitem__(self, idx):
+        """
+        This function returns a tuple that is further passed to collate_fn
+        """
+        img_id, img_metadata = self.get_image_metadata(idx)
+        img_size = np.array([img_metadata['width'], img_metadata['height']])
+
+        img_feat_path = os.path.join(self.feats_data_path, '{}.npz'.format(img_id))
+        img_box_path = os.path.join(self.box_data_path, '{}.npy'.format(img_id))
+
+        img_feat = np.load(img_feat_path)['feat']
+        img_feat_box = np.load(img_box_path)
+
+        # normalize box
+        img_feat_box = img_feat_box / np.tile(img_size, 2)
+
+        img_feat = torch.Tensor(img_feat)
+        img_feat_box = torch.Tensor(img_feat_box)
+
+        # we always return the query here since we want to compute the similarity of each image with the query
+        # this output is the input of the CollateFn
+        return img_feat, img_feat_box, img_id, self.query, idx
+
+    def __len__(self):
+        return self.num_imgs
 
 
 class BottomUpFeaturesDataset:
-    def __init__(self, root, json, features_path, split, ids=None, **kwargs):
+    def __init__(self, imgs_root, captions_json, features_path, split, ids=None, **kwargs):
         # which dataset?
-        r = root[0] if type(root) == tuple else root
+        r = imgs_root[0] if type(imgs_root) == tuple else imgs_root
         r = r.lower()
         if 'coco' in r:
-            self.underlying_dataset = CocoDataset(root, json, ids=ids)
+            self.underlying_dataset = CocoDataset(imgs_root, captions_json, coco_annotation_ids=ids)
         elif 'f30k' in r or 'flickr30k' in r:
-            self.underlying_dataset = FlickrDataset(root, json, split)
+            self.underlying_dataset = FlickrDataset(imgs_root, captions_json, split)
 
         # data_path = config['image-model']['data-path']
         self.feats_data_path = os.path.join(features_path, 'bu_att')
@@ -191,7 +328,7 @@ class BottomUpFeaturesDataset:
         else:
             target = caption
         # image = (img_feat, img_boxes)
-        return img_feat, img_boxes, target, index, img_id
+        return img_feat, img_boxes, target, index, img_id  # target is the actual caption sentence
 
     def __len__(self):
         return len(self.underlying_dataset)
@@ -256,10 +393,117 @@ class FlickrDataset(data.Dataset):
         else:
             return root, caption, img_id, None, None, img_size
 
-
-
     def __len__(self):
         return len(self.ids)
+
+
+class InferenceCollate(object):
+    def __new__(cls, *args, **kwargs):
+        # we only need to compute this once so it gets stored in a static class variable
+        cls.query_token_ids = None
+        cls.query_length = None
+        cls.img_feat_length = None
+        cls.img_feat_dim = None
+        cls.bboxes_length = None
+        cls.bboxes_dim = None
+
+        return super(InferenceCollate, cls).__new__(cls)
+
+    def __init__(self, config, pre_compute_img_embs):
+        self.create_query_batch = bool(config['image-retrieval']['create_query_batch'])
+        self.pre_compute_img_embs = pre_compute_img_embs
+        self.vocab_type = str(config['text-model']['name']).lower()
+        if self.vocab_type == 'bert' and not pre_compute_img_embs:
+            self.tokenizer = BertTokenizer.from_pretrained(config['text-model']['pretrain'])
+        elif self.vocab_type != 'bert':
+            raise ValueError("Currently only BERT Tokenizer is supported!")
+
+    @classmethod
+    def set_query_token_ids(cls, query_token_ids):
+        cls.query_token_ids = query_token_ids
+        cls.query_length = len(query_token_ids)
+
+    @classmethod
+    def set_img_feat_length_and_dimension(cls, img_feat):
+        # +1 because the first region feature is reserved as CLS
+        cls.img_feat_length = img_feat.shape[0] + 1
+        cls.img_feat_dim = img_feat.shape[1]
+
+    @classmethod
+    def set_bboxes_length_and_dimension(cls, bbox):
+        # +1 because the first region feature is reserved as CLS
+        cls.bboxes_length = bbox.shape[0] + 1
+        cls.bboxes_dim = bbox.shape[1]
+
+    def __call__(self, data):
+        img_feats, img_feat_bboxes, img_ids, queries, dataset_indices = zip(*data)
+        """
+        Build batch tensors from a list of (img_feats, img_feat_boxes, img_ids, queries, dataset_indices) tuples.
+        This data comes from the dataset
+            Args:
+                - img_feats:
+                - img_feat_bboxes:
+                - img_ids:
+                - queries:
+                - dataset_indices:
+
+            Returns:
+                - img_feature_batch: batch of image features
+                - img_feat_bboxes_batch: batch of bounding boxes of the image features
+                - img_feat_length: length of the image features and bounding boxes (all of same size)
+                - query_token_ids: bert token ids of the tokenized query
+                - query_length: length of the query
+                - dataset_indices: indices of the elements of the datasets inside the batch.
+        """
+
+        # encode (tokenize) the query
+        if self.query_token_ids is None and not self.pre_compute_img_embs:
+            # we don't need to pad or truncate since we only have a single query
+            # TODO actually we don't even need the tokenizer twice so we could just use a local variable
+            query_token_ids = torch.LongTensor(self.tokenizer.encode(queries[0]))
+            self.set_query_token_ids(query_token_ids)
+
+        # prepare image features
+        if self.img_feat_length is None:
+            self.set_img_feat_length_and_dimension(img_feats[0])
+
+        # prepare bounding boxes
+        if self.bboxes_length is None:
+            self.set_bboxes_length_and_dimension(img_feat_bboxes[0])
+
+        assert self.bboxes_length == self.img_feat_length
+
+        # create the image feature batch
+        batch_size = len(img_feats)
+        img_feature_batch = torch.zeros(batch_size, self.img_feat_length, self.img_feat_dim)
+        for i, f in enumerate(img_feats):
+            # reserve the first token as CLS
+            img_feature_batch[i, 1:] = f
+
+        # create the image features bounding boxes batch
+        img_feat_lengths = [self.img_feat_length for _ in range(batch_size)]
+        img_feat_bboxes_batch = torch.zeros(batch_size, self.bboxes_length, self.bboxes_dim)
+        for i, box in enumerate(img_feat_bboxes):
+            img_feat_bboxes_batch[i, 1:] = box
+
+        if self.create_query_batch and not self.pre_compute_img_embs:
+            # create the full query batch of size B x |Q|
+            # since the token id is a scalar, the dim is 1 and whe don't need to add it to the batch
+            # for the BERT embeddings the ids have to be Long
+            query_token_ids_batch = torch.zeros(batch_size, self.query_length).long()
+            for i in range(len(queries)):
+                query_token_ids_batch[i] = self.query_token_ids
+            query_lengths = [self.query_length for _ in range(batch_size)]
+        elif not self.create_query_batch and not self.pre_compute_img_embs:
+            # create a pseudo query batch with only one element of size 1 x |Q|
+            query_token_ids_batch = self.query_token_ids.unsqueeze(dim=0)
+            query_lengths = [self.query_length]
+        else:  # self.pre_compute_img_embs == True
+            # when pre-computing the image embeddings, we don't need (and have) information about the query
+            query_token_ids_batch = None
+            query_lengths = None
+
+        return img_feature_batch, img_feat_bboxes_batch, img_feat_lengths, query_token_ids_batch, query_lengths, dataset_indices
 
 
 class Collate:
@@ -277,12 +521,12 @@ class Collate:
 
             Returns:
                 images: torch tensor of shape (batch_size, 3, 256, 256).
-                targets: torch tensor of shape (batch_size, padded_length).
+                targets: torch tensor of shape (batch_size, padded_length). -> the textual tokens
                 lengths: list; valid length for each padded caption.
             """
         # Sort a data list by caption length
         # data.sort(key=lambda x: len(x[1]), reverse=True)
-        if len(data[0]) == 5:      # TODO: find a better way to distinguish the two
+        if len(data[0]) == 5:  # TODO: find a better way to distinguish the two
             images, boxes, captions, ids, img_ids = zip(*data)
         elif len(data[0]) == 4:
             images, captions, ids, img_ids = zip(*data)
@@ -298,12 +542,15 @@ class Collate:
         else:
             if self.vocab_type == 'bert':
                 cap_lengths = [len(self.tokenizer.tokenize(c)) + 2 for c in
-                           captions]  # + 2 in order to account for begin and end tokens
+                               captions]  # + 2 in order to account for begin and end tokens
                 max_len = max(cap_lengths)
-                captions_ids = [torch.LongTensor(self.tokenizer.encode(c, max_length=max_len, pad_to_max_length=True))
-                                for c in captions]
+                captions_token_ids = [torch.LongTensor(self.tokenizer.encode(c,
+                                                                             max_length=max_len,
+                                                                             padding='max_length',
+                                                                             truncation=True))
+                                      for c in captions]
 
-            captions = captions_ids
+            captions = captions_token_ids  # caption_ids are the token ids from bert tokenizer
         # Merge images (convert tuple of 3D tensor to 4D tensor)
         preextracted_images = not (images[0].shape[0] == 3)
         if not preextracted_images:
@@ -339,40 +586,46 @@ class Collate:
             targets = torch.zeros(len(captions), max(cap_lengths)).long()
             for i, cap in enumerate(captions):
                 end = cap_lengths[i]
-                targets[i, :end] = cap[:end]
+                targets[i, :end] = cap[:end]  # caption token ids
 
         if not preextracted_images:
             return images, targets, None, cap_lengths, None, ids
         else:
             # features = features.permute(0, 2, 1)
+            # img_features -> from FRCNN >> B x 2048
+            # targets -> padded caption token ids from BERT >> B x max_len(cap_lengths) or(queries)
+            # feat_lengths -> num of regions in the image (fixed to 36 + 1) >> B x 37
+            # cap_lengths -> true length of the non-padded captions or queries >> B x 1 (list of len B)
+            # out_boxes -> spatial information of the region boxes >> B x 37 x 4
+            # ids -> dataset indices wich are in this batch >> 1 x B (tuple of len B)
             return img_features, targets, feat_lengths, cap_lengths, out_boxes, ids
 
 
-def get_loader_single(data_name, split, root, json, transform, preextracted_root=None,
+def get_loader_single(data_name, split, imgs_root, captions_json, transform, pre_extracted_root=None,
                       batch_size=100, shuffle=True,
                       num_workers=2, ids=None, collate_fn=None, **kwargs):
     """Returns torch.utils.data.DataLoader for custom coco dataset."""
     if 'coco' in data_name:
-        if preextracted_root is not None:
-            dataset = BottomUpFeaturesDataset(root=root,
-                                              json=json,
-                                              features_path=preextracted_root, split=split,
+        if pre_extracted_root is not None:
+            dataset = BottomUpFeaturesDataset(imgs_root=imgs_root,
+                                              captions_json=captions_json,
+                                              features_path=pre_extracted_root, split=split,
                                               ids=ids, **kwargs)
         else:
             # COCO custom dataset
-            dataset = CocoDataset(root=root,
-                                  json=json,
-                                  transform=transform, ids=ids)
+            dataset = CocoDataset(imgs_root=imgs_root,
+                                  captions_json=captions_json,
+                                  transform=transform, coco_annotation_ids=ids)
     elif 'f8k' in data_name or 'f30k' in data_name:
-        if preextracted_root is not None:
-            dataset = BottomUpFeaturesDataset(root=root,
-                                              json=json,
-                                              features_path=preextracted_root, split=split,
+        if pre_extracted_root is not None:
+            dataset = BottomUpFeaturesDataset(imgs_root=imgs_root,
+                                              captions_json=captions_json,
+                                              features_path=pre_extracted_root, split=split,
                                               ids=ids, **kwargs)
         else:
-            dataset = FlickrDataset(root=root,
+            dataset = FlickrDataset(root=imgs_root,
                                     split=split,
-                                    json=json,
+                                    json=captions_json,
                                     transform=transform)
 
     # Data loader
@@ -385,7 +638,7 @@ def get_loader_single(data_name, split, root, json, transform, preextracted_root
     return data_loader
 
 
-def get_transform(data_name, split_name, config):
+def get_transform(data_name=None, split_name=None, config=None):
     normalizer = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                       std=[0.229, 0.224, 0.225])
     t_list = []
@@ -417,7 +670,7 @@ def get_loaders(config, workers, batch_size=None):
                                      roots['train']['img'],
                                      roots['train']['cap'],
                                      transform, ids=ids['train'],
-                                     preextracted_root=preextracted_root,
+                                     pre_extracted_root=preextracted_root,
                                      batch_size=batch_size, shuffle=True,
                                      num_workers=workers,
                                      collate_fn=collate_fn, config=config)
@@ -427,12 +680,56 @@ def get_loaders(config, workers, batch_size=None):
                                    roots['val']['img'],
                                    roots['val']['cap'],
                                    transform, ids=ids['val'],
-                                   preextracted_root=preextracted_root,
+                                   pre_extracted_root=preextracted_root,
                                    batch_size=batch_size, shuffle=False,
                                    num_workers=workers,
                                    collate_fn=collate_fn, config=config)
 
     return train_loader, val_loader
+
+
+def get_coco_image_retrieval_data(config, query=None, num_workers=32, pre_compute_img_embs=False):
+    # get the directories that contain the coco json files and coco annotation ids (which we may not need, I think)
+    roots, coco_annotation_ids = get_paths(config)
+
+    dataset_name = config['image-retrieval']['dataset']
+    batch_size = config['image-retrieval']['batch_size']
+    split_name = config['image-retrieval']['split']
+
+    imgs_root = roots[split_name]['img']
+
+    captions_json = roots[split_name]['cap']
+    coco_annotation_ids = coco_annotation_ids[split_name]
+    num_imgs = config['image-retrieval']['num_imgs']
+    pre_extracted_img_features_root = config['image-retrieval']['pre_extracted_img_features_root']
+
+    use_precomputed_img_embeddings = config['image-retrieval']['use_precomputed_img_embeddings']
+    if use_precomputed_img_embeddings:
+        dataset = PreComputedCocoImageEmbeddingsDataset(captions_json=captions_json,
+                                                        coco_annotation_ids=coco_annotation_ids,
+                                                        num_imgs=num_imgs,
+                                                        config=config,
+                                                        num_workers=num_workers)
+        return dataset
+
+    dataset = PreComputedCocoFeaturesDataset(imgs_root=imgs_root,
+                                             img_features_path=pre_extracted_img_features_root,
+                                             captions_json=captions_json,
+                                             coco_annotation_ids=coco_annotation_ids,
+                                             query=query,
+                                             num_imgs=num_imgs)
+
+    # this creates the batches which get passed to the model (inside the query gets repeated or not based on the config)
+    collate_fn = InferenceCollate(config, pre_compute_img_embs)
+
+    data_loader = data.DataLoader(dataset=dataset,
+                                  batch_size=batch_size,
+                                  shuffle=False,
+                                  pin_memory=True,
+                                  num_workers=num_workers,
+                                  collate_fn=collate_fn)
+
+    return data_loader
 
 
 def get_test_loader(config, workers, split_name='test', batch_size=None):
@@ -443,15 +740,15 @@ def get_test_loader(config, workers, split_name='test', batch_size=None):
     # Build Dataset Loader
     roots, ids = get_paths(config)
 
-    preextracted_root = config['image-model']['pre-extracted-features-root'] \
+    pre_extracted_root = config['image-model']['pre-extracted-features-root'] \
         if 'pre-extracted-features-root' in config['image-model'] else None
 
     transform = get_transform(data_name, split_name, config)
     test_loader = get_loader_single(data_name, split_name,
-                                    roots[split_name]['img'],
-                                    roots[split_name]['cap'],
-                                    transform, ids=ids[split_name],
-                                    preextracted_root=preextracted_root,
+                                    imgs_root=roots[split_name]['img'],
+                                    captions_json=roots[split_name]['cap'],
+                                    transform=transform, ids=ids[split_name],
+                                    pre_extracted_root=pre_extracted_root,
                                     batch_size=batch_size, shuffle=False,
                                     num_workers=workers,
                                     collate_fn=collate_fn, config=config)

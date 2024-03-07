@@ -3,3 +3,10 @@
 *.ipynb_checkpoints
 *.json
 *.pth.tar
+
+
+.idea
+data
+pretrained_models
+*.tar
+*.ipynb

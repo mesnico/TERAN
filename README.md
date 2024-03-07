@@ -38,6 +38,12 @@ conda activate teran
 export PYTHONPATH=.
 ```
 
+2.1 Setup minimal python environment for CUDA 10.1 using conda:
+```
+conda env create --file environment_min.yml
+conda activate teran
+export PYTHONPATH=.
+```
 ## Get the data
 Data and pretrained models be downloaded from this [OneDrive link](https://cnrsc-my.sharepoint.com/:f:/g/personal/nicola_messina_cnr_it/EnsuSFo-rG5Pmf2FhQDPe7EBCHrNtR1ujSIOEcgaj5Xrwg?e=Ger6Sl) (see the steps below to understand which files you need):
 
